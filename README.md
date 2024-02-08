@@ -5,4 +5,5 @@ This code is designed to work with an [Adafruit Feather RP2040 LoRa RFM95](https
 
 # Dependencies
 For Rust on embedded support with powerful Async capabilities: https://embassy.dev/
+
 For utilization of the LoRa module over SPI: https://github.com/mr-glt/sx127x_lora
