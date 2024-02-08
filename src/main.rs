@@ -74,6 +74,7 @@ async fn main(spawner: Spawner) {
         sx127x_lora::LoRa::new(spi, cs, reset, 915, Delay).expect("Coult not initalize module!");
     lora.set_tx_power(17, 1).expect("Could not set power");
 
+    // This is the general scheme to stick a message in a buffer
     let message = "Hello, world!";
     let mut buffer = [0; 255];
     for (i, c) in message.chars().enumerate() {
