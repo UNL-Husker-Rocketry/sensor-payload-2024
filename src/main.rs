@@ -39,17 +39,16 @@ async fn blink_led(mut led: Output<'static, AnyPin>) {
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
-    // Set up USB serial logging
+    // Set up USB serial logging and the LED blink
     let driver = Driver::new(p.USB, Irqs);
     spawner.spawn(logger_task(driver)).unwrap();
+    let led = Output::new(AnyPin::from(p.PIN_13), Level::Low);
+    spawner.spawn(blink_led(led)).unwrap();
 
     // Wait for a bit for everything to start up, this
     // along with the serial logging should be removed
     // before being used for real
     Timer::after_secs(2).await;
-
-    let led = Output::new(AnyPin::from(p.PIN_13), Level::Low);
-    spawner.spawn(blink_led(led)).unwrap();
 
     // Set up all the pins needed for the LoRa module
     // Documentation here: https://learn.adafruit.com/feather-rp2040-rfm95/pinouts
@@ -82,10 +81,16 @@ async fn main(spawner: Spawner) {
     }
 
     loop {
-        let transmit = lora.transmit_payload(buffer, message.len());
-        match transmit {
-            Ok(_) => info!("Transmit success!"),
-            Err(_) => info!("Couldn't transmit!"),
+        // Make sure it isn't already transmitting
+        if !lora.transmitting().unwrap() {
+            // Transmit something
+            let transmit = lora.transmit_payload(buffer, message.len());
+
+            // Make sure it didn't fail
+            match transmit {
+                Ok(_) => info!("Transmit success!"),
+                Err(_) => info!("Couldn't transmit!"),
+            }
         }
 
         Timer::after_millis(1000).await;
