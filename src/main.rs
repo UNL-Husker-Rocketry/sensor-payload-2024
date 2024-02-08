@@ -5,11 +5,11 @@ use embassy_executor::Spawner;
 use embassy_rp::{
     bind_interrupts,
     gpio::{self, AnyPin},
-    spi::{self, Spi},
     peripherals::USB,
+    spi::{self, Spi},
     usb::{Driver, InterruptHandler},
 };
-use embassy_time::{Timer, Delay};
+use embassy_time::{Delay, Timer};
 use gpio::{Level, Output};
 use log::info;
 use {defmt_rtt as _, panic_probe as _};
@@ -69,20 +69,9 @@ async fn main(spawner: Spawner) {
     let cs = Output::new(rfm_cs, Level::Low);
     let reset = Output::new(rfm_rst, Level::Low);
 
-    // Actually initialize the LoRa module
-    let mut lora = match sx127x_lora::LoRa::new(
-        spi, cs, reset, 915, Delay
-    ) {
-        Ok(lora) => {
-            info!("Success initing module!");
-            lora
-        },
-        Err(err) => {
-            info!("Error initalizing: {:?}", err);
-            panic!();
-        }
-    };
-
+    // Actually initialize the LoRa module and then set the transmit power
+    let mut lora =
+        sx127x_lora::LoRa::new(spi, cs, reset, 915, Delay).expect("Coult not initalize module!");
     lora.set_tx_power(17, 1).expect("Could not set power");
 
     let message = "Hello, world!";
