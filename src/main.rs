@@ -69,9 +69,10 @@ async fn main(spawner: Spawner) {
     let reset = Output::new(rfm_rst, Level::Low);
 
     // Actually initialize the LoRa module and then set the transmit power
+    // 915 is the frequency (in MHz), 5 is the power (in dB)
     let mut lora =
-        sx127x_lora::LoRa::new(spi, cs, reset, 915, Delay).expect("Coult not initalize module!");
-    lora.set_tx_power(17, 1).expect("Could not set power");
+        sx127x_lora::LoRa::new(spi, cs, reset, 915, Delay).expect("Could not initalize module!");
+    lora.set_tx_power(5, 1).expect("Could not set power");
 
     // This is the general scheme to stick a message in a buffer
     let message = "Hello, world!";
