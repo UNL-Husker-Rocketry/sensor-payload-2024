@@ -5,13 +5,17 @@ use embassy_executor::Spawner;
 use embassy_rp::{
     bind_interrupts,
     gpio::{self, AnyPin},
-    peripherals::USB,
-    spi::{self, Spi},
+    peripherals::{USB, SPI1},
+    spi::{self, Spi, Blocking},
     usb::{Driver, InterruptHandler},
+};
+use embassy_sync::{
+    blocking_mutex::raw::ThreadModeRawMutex,
+    channel::{Channel, Receiver},
 };
 use embassy_time::{Delay, Timer};
 use gpio::{Level, Output};
-use log::info;
+use log::{info, warn};
 use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
@@ -35,6 +39,41 @@ async fn blink_led(mut led: Output<'static, AnyPin>) {
     }
 }
 
+#[embassy_executor::task]
+async fn transmitter(
+    channel_rec: Receiver<'static, ThreadModeRawMutex, (u8, [u8; 255]), 1>,
+
+    spi:    Spi<'static, SPI1, Blocking>,
+    cs:     Output<'static, AnyPin>,
+    reset:  Output<'static, AnyPin>,
+) {
+    // Actually initialize the LoRa module and then set the transmit power
+    // 915 is the frequency (in MHz), 5 is the power (in dB)
+    let mut lora =
+        sx127x_lora::LoRa::new(spi, cs, reset, 915, Delay).expect("Could not initalize module!");
+    lora.set_tx_power(17, 1).expect("Could not set power");
+
+    loop {
+        let message = channel_rec.receive().await;
+
+        // Make sure it isn't already transmitting
+        while lora.transmitting().unwrap() {
+            Timer::after_millis(1).await;
+        }
+
+        // Transmit something
+        let transmit = lora.transmit_payload(message.1, message.0 as usize);
+
+        // Make sure it didn't fail
+        match transmit {
+            Ok(_) => (),
+            Err(_) => warn!("Transmission failed."),
+        }
+    }
+}
+
+static CHANNEL: Channel<ThreadModeRawMutex, (u8, [u8; 255]), 1> = Channel::new();
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
@@ -56,8 +95,8 @@ async fn main(spawner: Spawner) {
     let miso = p.PIN_8;
     let mosi = p.PIN_15;
     let clk = p.PIN_14;
-    let rfm_cs = p.PIN_16; // Chip Select
-    let rfm_rst = p.PIN_17; // Reset
+    let rfm_cs = AnyPin::from(p.PIN_16); // Chip Select
+    let rfm_rst = AnyPin::from(p.PIN_17); // Reset
 
     // Set up the SPI interface
     let mut config = spi::Config::default();
@@ -68,11 +107,9 @@ async fn main(spawner: Spawner) {
     let cs = Output::new(rfm_cs, Level::Low);
     let reset = Output::new(rfm_rst, Level::Low);
 
-    // Actually initialize the LoRa module and then set the transmit power
-    // 915 is the frequency (in MHz), 5 is the power (in dB)
-    let mut lora =
-        sx127x_lora::LoRa::new(spi, cs, reset, 915, Delay).expect("Could not initalize module!");
-    lora.set_tx_power(5, 1).expect("Could not set power");
+    // Set up the LoRa transmitter in another thread
+    let channel_sender = CHANNEL.sender();
+    spawner.spawn(transmitter(CHANNEL.receiver(), spi, cs, reset)).unwrap();
 
     // This is the general scheme to stick a message in a buffer
     let message = "Hello, world!";
@@ -82,18 +119,9 @@ async fn main(spawner: Spawner) {
     }
 
     loop {
-        // Make sure it isn't already transmitting
-        if !lora.transmitting().unwrap() {
-            // Transmit something
-            let transmit = lora.transmit_payload(buffer, message.len());
-
-            // Make sure it didn't fail
-            match transmit {
-                Ok(_) => info!("Transmit success!"),
-                Err(_) => info!("Couldn't transmit!"),
-            }
-        }
-
-        Timer::after_millis(1000).await;
+        info!("Sending...");
+        channel_sender.send((255, [0; 255])).await;
+        info!("Sent!");
+        Timer::after_secs(1).await;
     }
 }
