@@ -1,5 +1,6 @@
 [package]
-name = "sensor-payload"
+name = "sensor-receiving"
+authors.workspace = true
 version = "0.1.0"
 edition = "2021"
 
@@ -22,10 +23,3 @@ cortex-m-rt = "0.7.0"
 # LoRa and sensors
 sx127x_lora = "0.3.1"
 heapless = "0.8.0"
-
-# These settings make it as small as possible
-[profile.release]
-lto = true
-strip = true
-opt-level = "z"
-codegen-units = 1

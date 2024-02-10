@@ -1,5 +1,16 @@
 [workspace]
+resolver = "2"
 members = [
     "sending",
     "receiving",
 ]
+
+[workspace.package]
+authors = ["Grant Gardner"]
+
+# These settings make it as small as possible
+[profile.release]
+lto = true
+strip = true
+opt-level = "z"
+codegen-units = 1
