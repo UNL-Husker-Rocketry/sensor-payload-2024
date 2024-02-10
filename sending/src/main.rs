@@ -120,7 +120,7 @@ async fn main(spawner: Spawner) {
 
     loop {
         info!("Sending...");
-        channel_sender.send((255, [0; 255])).await;
+        channel_sender.send((message.len() as u8, buffer)).await;
         info!("Sent!");
         Timer::after_secs(1).await;
     }
