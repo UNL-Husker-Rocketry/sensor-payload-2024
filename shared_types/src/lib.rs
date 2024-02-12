@@ -3,6 +3,7 @@
 pub use bincode;
 
 use bincode::Encode;
+use bincode::encode_into_slice;
 
 /// A standard packet for transmission of basic telemetry
 #[derive(Encode, Clone, Copy, Debug)]
@@ -27,6 +28,18 @@ pub struct Packet {
 
     /// Acceleration in G * 10 for X, Y, Z
     pub accel: Accel,
+}
+
+impl Packet {
+    pub fn to_buffer(&self) -> ([u8; 255], u8) {
+        let mut bytes = [0; 255];
+        let size = encode_into_slice(
+            self,
+            &mut bytes,
+            bincode::config::standard()
+        ).unwrap();
+        (bytes, size as u8)
+    }
 }
 
 /// Time

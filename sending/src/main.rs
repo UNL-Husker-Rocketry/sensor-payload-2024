@@ -15,10 +15,9 @@ use embassy_sync::{
 };
 use embassy_time::{Delay, Timer};
 use gpio::{Level, Output};
-use log::{info, warn};
+use log::info;
 use {defmt_rtt as _, panic_probe as _};
 
-use shared_types::bincode::{self, encode_into_slice};
 use shared_types::{Packet, Time, Accel};
 
 bind_interrupts!(struct Irqs {
@@ -53,20 +52,25 @@ async fn transmitter(
 ) {
     // Actually initialize the LoRa module and then set the transmit power
     // 915 is the frequency (in MHz), 17 is the transmission power (in dB)
-    let mut lora =
-        sx127x_lora::LoRa::new(spi, cs, reset, 915, Delay).expect("Could not initalize module!");
-    lora.set_tx_power(17, 1).expect("Could not set power");
+    let mut lora = match sx127x_lora::LoRa::new(spi, cs, reset, 915, Delay) {
+        Ok(module) => module,
+        Err(_) => {
+            return
+        },
+    };
+
+    match lora.set_tx_power(17, 1) {
+        Ok(_) => (),
+        Err(_) => {
+            return
+        },
+    };
 
     loop {
         let message = channel_rec.receive().await;
 
         // Create the bytes of the packet
-        let mut bytes = [0u8; 255];
-        let length = encode_into_slice(
-            message,
-            &mut bytes,
-            bincode::config::standard()
-        ).unwrap();
+        let packet = message.to_buffer();
 
         // Make sure it isn't already transmitting
         while lora.transmitting().unwrap() {
@@ -74,12 +78,12 @@ async fn transmitter(
         }
 
         // Transmit the item
-        let transmit = lora.transmit_payload(bytes, length);
+        let transmit = lora.transmit_payload(packet.0, packet.1 as usize);
 
         // Make sure it didn't fail
         match transmit {
             Ok(_) => (),
-            Err(_) => warn!("WARN: Transmission failed."),
+            Err(_) => (),
         }
     }
 }
