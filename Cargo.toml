@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "sending",
     "receiving",
+    "shared_types",
 ]
 
 [workspace.package]

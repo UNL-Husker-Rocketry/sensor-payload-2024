@@ -1,0 +1,11 @@
+[package]
+name = "shared-types"
+version = "0.1.0"
+edition = "2021"
+authors.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bincode = { version = "2.0.0-rc.3", default-features = false, features = ["derive"] }
+nmea0183 = "0.4.0"
