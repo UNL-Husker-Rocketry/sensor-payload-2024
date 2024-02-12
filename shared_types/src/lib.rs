@@ -2,11 +2,13 @@
 
 pub use bincode;
 
-use bincode::Encode;
+use bincode::{Decode, Encode};
+use bincode::decode_from_slice;
 use bincode::encode_into_slice;
+use bincode::error::DecodeError;
 
 /// A standard packet for transmission of basic telemetry
-#[derive(Encode, Clone, Copy, Debug)]
+#[derive(Decode, Encode, Clone, Copy, Debug)]
 pub struct Packet {
     /// Time in hr, min, sec, ms format
     pub time: Time,
@@ -33,26 +35,35 @@ pub struct Packet {
 impl Packet {
     pub fn to_buffer(&self) -> ([u8; 255], u8) {
         let mut bytes = [0; 255];
+
         let size = encode_into_slice(
             self,
             &mut bytes,
             bincode::config::standard()
         ).unwrap();
+
         (bytes, size as u8)
+    }
+
+    pub fn from_buffer(buffer: &[u8]) -> Result<(Self, usize), DecodeError> {
+        decode_from_slice(
+            buffer,
+            bincode::config::standard()
+        )
     }
 }
 
 /// Time
-#[derive(Encode, Clone, Copy, Debug, Default)]
+#[derive(Decode, Encode, Clone, Copy, Debug, Default)]
 pub struct Time {
     pub hours: u8,
     pub minutes: u8,
     pub seconds: u8,
-    pub milliseconds: u16,
+    pub microseconds: u32,
 }
 
 // Acceleration in G * 10
-#[derive(Encode, Clone, Copy, Debug)]
+#[derive(Decode, Encode, Clone, Copy, Debug)]
 pub struct Accel {
     pub x: u8,
     pub y: u8,

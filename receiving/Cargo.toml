@@ -10,6 +10,9 @@ embassy-rp = { version = "0.1.0", features = ["defmt", "unstable-pac", "time-dri
 embassy-time = { version = "0.3.0", features = ["defmt"] }
 embassy-usb-logger = "0.1.0"
 
+# Data and packet handling
+shared-types = { path = "../shared_types/" }
+
 # Error and print handling
 defmt = "0.3.5"
 defmt-rtt = "0.4"
@@ -22,4 +25,3 @@ cortex-m-rt = "0.7.0"
 
 # LoRa and sensors
 sx127x_lora = "0.3.1"
-heapless = "0.8.0"

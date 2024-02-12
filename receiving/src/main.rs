@@ -4,7 +4,7 @@
 use embassy_executor::Spawner;
 use embassy_rp::{
     bind_interrupts,
-    gpio::{self, AnyPin},
+    gpio::{self, AnyPin, Input, Pull},
     peripherals::USB,
     spi::{self, Spi},
     usb::{Driver, InterruptHandler},
@@ -13,7 +13,8 @@ use embassy_time::{Delay, Timer};
 use gpio::{Level, Output};
 use log::info;
 use {defmt_rtt as _, panic_probe as _};
-use heapless::{String, Vec};
+
+use shared_types::Packet;
 
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
@@ -69,26 +70,20 @@ async fn main(spawner: Spawner) {
     let cs = Output::new(rfm_cs, Level::Low);
     let reset = Output::new(rfm_rst, Level::Low);
 
-    // Actually initialize the LoRa module and then set the transmit power
-    // 915 is the frequency (in MHz), 5 is the power (in dB)
+    // Actually initialize the LoRa module and the recieve pin
+    // 915 is the frequency (in MHz)
     let mut lora =
         sx127x_lora::LoRa::new(spi, cs, reset, 915, Delay).expect("Could not initalize module!");
-    lora.set_tx_power(5, 1).expect("Could not set power");
+    let mut dio0 = Input::new(p.PIN_21, Pull::None);
 
     loop {
-        let poll = lora.poll_irq(Some(20));
+        // Wait until the radio module indicates a packet has
+        // been recieved
+        dio0.wait_for_high().await;
 
-        match poll {
-            Ok(size) =>{
-                info!("with Payload: ");
-                let buffer = lora.read_packet().unwrap();
-                let mut result: Vec<u8, 255> = Vec::new();
-                result.extend_from_slice(&buffer[0..size]).unwrap();
-                let string: String<255> = String::from_utf8(result).unwrap();
-                info!("{:?}", string);
-            },
-            Err(_) => info!("Timeout"),
-        }
+        let buffer = lora.read_packet().unwrap();
+        let payload = Packet::from_buffer(&buffer);
+        info!("----\nRecieved!\nWith Payload\n {:?}", payload);
 
         Timer::after_millis(1000).await;
     }
