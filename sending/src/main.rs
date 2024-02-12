@@ -73,8 +73,17 @@ async fn transmitter(
         let packet = message.to_buffer();
 
         // Make sure it isn't already transmitting
-        while lora.transmitting().unwrap() {
-            Timer::after_millis(1).await;
+        let mut transmit_status = lora.transmitting();
+        let time = embassy_time::Instant::now();
+        while transmit_status.is_ok_and(|x| x)
+            && time.elapsed().as_millis() < 1000
+        {
+            Timer::after_millis(2).await;
+            transmit_status = lora.transmitting();
+        }
+
+        if time.elapsed().as_millis() > 1000 {
+            return
         }
 
         // Transmit the item
@@ -97,7 +106,7 @@ async fn main(spawner: Spawner) {
     // Set up USB serial logging and the LED blink tasks
     let driver = Driver::new(p.USB, Irqs);
     spawner.spawn(logger_task(driver)).unwrap();
-    let led = Output::new(AnyPin::from(p.PIN_13), Level::Low);
+    let led = Output::new(AnyPin::from(p.PIN_25), Level::Low);
     spawner.spawn(blink_led(led)).unwrap();
 
     // Wait for a bit for everything to start up
@@ -146,7 +155,10 @@ async fn main(spawner: Spawner) {
         info!("{:?}", conditions);
 
         // Send the data via the second running task
-        transmit_sender.send(conditions).await;
+        match transmit_sender.try_send(conditions) {
+            Ok(_) => (),
+            Err(_) => info!("Packet could not be sent to task")
+        };
 
         Timer::after_secs(1).await;
     }
