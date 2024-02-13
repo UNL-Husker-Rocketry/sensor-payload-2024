@@ -139,7 +139,12 @@ async fn main(spawner: Spawner) {
     loop {
         // An example packet, in reality it will be compiled from incoming sensor data
         let conditions = Packet {
-            time: Time::default(),
+            time: Time {    // 10:13:23.132831
+                hours: 10,
+                minutes: 13,
+                seconds: 23,
+                microseconds: 132831,
+            },
             lat: 40806862,  //  40.806862 degrees
             lon: -96681679, // -96.681679 degrees
             alt: 2209,      // 2,209 meters
