@@ -70,7 +70,7 @@ async fn transmitter(
         let message = channel_rec.receive().await;
 
         // Create the bytes of the packet
-        let packet = message.to_buffer();
+        let packet = message.as_buffer();
 
         // Make sure it isn't already transmitting
         let mut transmit_status = lora.transmitting();
@@ -90,9 +90,8 @@ async fn transmitter(
         let transmit = lora.transmit_payload(packet.0, packet.1 as usize);
 
         // Make sure it didn't fail
-        match transmit {
-            Ok(_) => (),
-            Err(_) => (),
+        if transmit.is_err() {
+            info!("Err!")
         }
     }
 }
