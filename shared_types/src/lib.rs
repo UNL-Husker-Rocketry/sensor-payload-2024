@@ -1,11 +1,13 @@
 #![no_std]
 
+use core::fmt::Display;
+
 use packed_struct::prelude::*;
 
 /// A standard packet for transmission of basic telemetry
 #[derive(Clone, Copy, Debug)]
 #[derive(PackedStruct)]
-#[packed_struct(bit_numbering="msb0", size_bytes=22)]
+#[packed_struct(bit_numbering="msb0")]
 pub struct Packet {
     /// Time in hr, min, sec, µs format
     #[packed_field(bits="0..=37")]
@@ -46,25 +48,53 @@ pub struct Packet {
     #[packed_field(size_bits="16")]
     pub pres: u16,
 
-    /// Acceleration in G * 100 for X, Y, Z
+    /// Acceleration in G * 10 for X
     ///
-    /// 0.0g - 204.8g
-    #[packed_field(size_bits="33")]
-    pub accel: Accel,
+    /// -102.4g - 102.4g
+    #[packed_field(endian="lsb")]
+    #[packed_field(size_bits="11")]
+    pub accel_x: i16,
+
+    /// Acceleration in G * 10 for Y
+    ///
+    /// -102.4g - 102.4g
+    #[packed_field(endian="lsb")]
+    #[packed_field(size_bits="11")]
+    pub accel_y: i16,
+
+    /// Acceleration in G * 10 for Z
+    ///
+    /// -102.4g - 102.4g
+    #[packed_field(endian="lsb")]
+    #[packed_field(size_bits="11")]
+    pub accel_z: i16,
 }
 
 impl Packet {
+    /// Returns the [Packet] as a bit-packed buffer of 255 bytes,
+    /// along with the size of the data within the buffer.
     pub fn as_buffer(&self) -> ([u8; 255], u8) {
+        let mut byte_temp = [0; 22];
         let mut bytes = [0; 255];
 
-        let size = self.pack().iter().len();
-        self.pack_to_slice(&mut bytes).unwrap();
+        self.pack_to_slice(&mut byte_temp).unwrap();
 
-        (bytes, size as u8)
+        for (i, byte) in byte_temp.iter().enumerate() {
+            bytes[i] = *byte;
+        }
+
+        (bytes, byte_temp.len() as u8)
     }
 
+    /// Takes in a buffer and unpacks the bit-packing to return a
+    /// new [Packet] with the original data.
     pub fn from_buffer(buffer: &[u8]) -> Result<Self, PackingError> {
-        Self::unpack_from_slice(buffer)
+        let mut small_buf = [0; 22];
+        for i in 0..22 {
+            small_buf[i] = buffer[i]
+        }
+
+        Self::unpack_from_slice(&small_buf)
     }
 }
 
@@ -91,18 +121,8 @@ pub struct Time {
     pub microseconds: u32,
 }
 
-/// Acceleration in G * 100
-#[derive(Clone, Copy, Debug)]
-#[derive(PackedStruct)]
-#[packed_struct(bit_numbering="msb0")]
-pub struct Accel {
-    #[packed_field(endian="lsb")]
-    #[packed_field(bits="0..=11")]
-    pub x: i16,
-    #[packed_field(endian="lsb")]
-    #[packed_field(size_bits="11")]
-    pub y: i16,
-    #[packed_field(endian="lsb")]
-    #[packed_field(size_bits="11")]
-    pub z: i16,
+impl Display for Time {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}:{}:{}.{}", self.hours, self.minutes, self.seconds, self.microseconds)
+    }
 }

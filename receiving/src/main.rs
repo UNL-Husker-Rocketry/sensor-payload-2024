@@ -82,8 +82,21 @@ async fn main(spawner: Spawner) {
         dio0.wait_for_high().await;
 
         let buffer = lora.read_packet().unwrap();
-        let payload = Packet::from_buffer(&buffer);
-        info!("----\nRecieved!\nWith Payload\n {:?}", payload);
+        let payload = Packet::from_buffer(&buffer).unwrap();
+        //info!("----\nRecieved!\nWith Payload\n {:?}", payload);
+
+        info!("\n{}", payload.time);
+        info!("Latitude:   {}", payload.lat as f64 / 1_000_000.0);
+        info!("Longitude: {}", payload.lon as f64 / 1_000_000.0);
+        info!("Altitude:   {}m", payload.alt);
+        info!("Temperature: {}C", payload.temp - 272);
+        info!("Pressure:   {}Mb", payload.pres as f32 / 10.0);
+        info!(
+            "X: {}, Y: {}, Z: {}",
+            payload.accel_x as f32 / 10.0,
+            payload.accel_y as f32 / 10.0,
+            payload.accel_z as f32 / 10.0,
+        );
 
         Timer::after_millis(1000).await;
     }
