@@ -4,7 +4,7 @@
 use embassy_executor::Spawner;
 use embassy_rp::{
     bind_interrupts,
-    gpio::{self, AnyPin, Input, Pull},
+    gpio::{self, AnyPin},
     peripherals::USB,
     spi::{self, Spi},
     usb::{Driver, InterruptHandler},
@@ -12,9 +12,8 @@ use embassy_rp::{
 use embassy_time::{Delay, Timer};
 use gpio::{Level, Output};
 use log::info;
-use {defmt_rtt as _, panic_probe as _};
-
 use shared_types::Packet;
+use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
@@ -42,10 +41,10 @@ async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
     // Set up USB serial logging and the LED blink
+    let led = Output::new(AnyPin::from(p.PIN_25), Level::High);
+    spawner.spawn(blink_led(led)).unwrap();
     let driver = Driver::new(p.USB, Irqs);
     spawner.spawn(logger_task(driver)).unwrap();
-    let led = Output::new(AnyPin::from(p.PIN_13), Level::Low);
-    spawner.spawn(blink_led(led)).unwrap();
 
     // Wait for a bit for everything to start up, this
     // along with the serial logging should be removed
@@ -55,11 +54,11 @@ async fn main(spawner: Spawner) {
     // Set up all the pins needed for the LoRa module
     // Documentation here: https://learn.adafruit.com/feather-rp2040-rfm95/pinouts
     // And here: https://github.com/mr-glt/sx127x_lora
-    let miso = p.PIN_8;
-    let mosi = p.PIN_15;
-    let clk = p.PIN_14;
-    let rfm_cs = p.PIN_16; // Chip Select
-    let rfm_rst = p.PIN_17; // Reset
+    let miso    = p.PIN_8;
+    let mosi    = p.PIN_15;
+    let clk     = p.PIN_14;
+    let rfm_cs  = AnyPin::from(p.PIN_16); // Chip Select
+    let rfm_rst = AnyPin::from(p.PIN_17); // Reset
 
     // Set up the SPI interface
     let mut config = spi::Config::default();
@@ -70,34 +69,36 @@ async fn main(spawner: Spawner) {
     let cs = Output::new(rfm_cs, Level::Low);
     let reset = Output::new(rfm_rst, Level::Low);
 
-    // Actually initialize the LoRa module and the recieve pin
-    // 915 is the frequency (in MHz)
+    // Actually initialize the LoRa module and then set the transmit power
+    // 915 is the frequency (in MHz), 5 is the power (in dB)
     let mut lora =
         sx127x_lora::LoRa::new(spi, cs, reset, 915, Delay).expect("Could not initalize module!");
-    let mut dio0 = Input::new(p.PIN_21, Pull::None);
 
     loop {
-        // Wait until the radio module indicates a packet has
-        // been recieved
-        dio0.wait_for_high().await;
+        let poll = lora.poll_irq(Some(20));
 
-        let buffer = lora.read_packet().unwrap();
-        let payload = Packet::from_buffer(&buffer).unwrap();
-        //info!("----\nRecieved!\nWith Payload\n {:?}", payload);
+        match poll {
+            Ok(size) =>{
+                info!("with Payload: ");
+                let buffer = lora.read_packet().unwrap();
+                let packet = Packet::from_buffer(&buffer).unwrap();
+                info!("\n{}", packet.time);
+                info!("Latitude:   {}°", packet.lat as f64 / 1_000_000.0);
+                info!("Longitude: {}°", packet.lon as f64 / 1_000_000.0);
+                info!("Altitude:   {}m", packet.alt);
+                info!("Temp:       {}°C", packet.temp as i16 - 272);
+                info!("Pressure:   {}Mb", packet.pres as f32 / 10.0);
+                info!("Acceleration:");
+                info!(
+                    "  X: {}\n  Y: {}\n  Z: {}",
+                    packet.accel_x as f32 / 20.0,
+                    packet.accel_y as f32 / 20.0,
+                    packet.accel_z as f32 / 20.0,
+                );
+            },
+            Err(err) => info!("Timeout: {:?}", err),
+        }
 
-        info!("\n{}", payload.time);
-        info!("Latitude:   {}", payload.lat as f64 / 1_000_000.0);
-        info!("Longitude: {}", payload.lon as f64 / 1_000_000.0);
-        info!("Altitude:   {}m", payload.alt);
-        info!("Temperature: {}C", payload.temp - 272);
-        info!("Pressure:   {}Mb", payload.pres as f32 / 10.0);
-        info!(
-            "X: {}, Y: {}, Z: {}",
-            payload.accel_x as f32 / 10.0,
-            payload.accel_y as f32 / 10.0,
-            payload.accel_z as f32 / 10.0,
-        );
-
-        Timer::after_millis(1000).await;
+        Timer::after_millis(100).await;
     }
 }

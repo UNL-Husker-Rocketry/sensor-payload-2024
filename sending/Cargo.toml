@@ -26,3 +26,4 @@ cortex-m-rt = "0.7.0"
 # LoRa and sensors
 sx127x_lora = "0.3.1"
 embassy-sync = "0.5.0"
+mma8x5x = "0.1.1"

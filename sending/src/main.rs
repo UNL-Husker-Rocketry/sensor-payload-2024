@@ -5,9 +5,9 @@ use embassy_executor::Spawner;
 use embassy_rp::{
     bind_interrupts,
     gpio::{self, AnyPin},
-    peripherals::{USB, SPI1},
-    spi::{self, Spi, Blocking},
-    usb::{Driver, InterruptHandler},
+    peripherals::{USB, SPI1, UART0, PIN_0},
+    spi::{Spi, Blocking},
+    usb::{Driver, self}, i2c, uart::{UartRx, self, Async, BufferedUart},
 };
 use embassy_sync::{
     blocking_mutex::raw::ThreadModeRawMutex,
@@ -18,10 +18,12 @@ use gpio::{Level, Output};
 use log::info;
 use {defmt_rtt as _, panic_probe as _};
 
-use shared_types::{Packet, Time, Accel};
+use mma8x5x::Mma8x5x;
+use shared_types::{Packet, Time};
 
 bind_interrupts!(struct Irqs {
-    USBCTRL_IRQ => InterruptHandler<USB>;
+    USBCTRL_IRQ => usb::InterruptHandler<USB>;
+    UART0_IRQ => uart::InterruptHandler<UART0>;
 });
 
 #[embassy_executor::task]
@@ -50,7 +52,7 @@ async fn transmitter(
     cs:     Output<'static, AnyPin>,
     reset:  Output<'static, AnyPin>,
 ) {
-    // Actually initialize the LoRa module and then set the transmit power
+    // Initialize the LoRa module and then set the transmit power
     // 915 is the frequency (in MHz), 17 is the transmission power (in dB)
     let mut lora = match sx127x_lora::LoRa::new(spi, cs, reset, 915, Delay) {
         Ok(module) => module,
@@ -113,6 +115,15 @@ async fn main(spawner: Spawner) {
     // before being used for real
     Timer::after_secs(2).await;
 
+    // Set up I2C stuff
+    let sda = p.PIN_2;
+    let scl = p.PIN_3;
+    let i2c = i2c::I2c::new_blocking(p.I2C1, scl, sda, i2c::Config::default());
+
+    // Pressure sensor
+    let accel = Mma8x5x::new_mma8653(i2c);
+    let mut accel = accel.into_active().ok().unwrap();
+
     // Set up all the pins needed for the LoRa module
     // Documentation here: https://learn.adafruit.com/feather-rp2040-rfm95/pinouts
     // And here: https://github.com/mr-glt/sx127x_lora
@@ -123,7 +134,7 @@ async fn main(spawner: Spawner) {
     let rfm_rst = AnyPin::from(p.PIN_17); // Reset
 
     // Set up the SPI interface
-    let mut config = spi::Config::default();
+    let mut config = embassy_rp::spi::Config::default();
     config.frequency = 20_000;
     let spi = Spi::new_blocking(p.SPI1, clk, mosi, miso, config);
 
@@ -136,6 +147,8 @@ async fn main(spawner: Spawner) {
     spawner.spawn(transmitter(CHANNEL.receiver(), spi, cs, reset)).unwrap();
 
     loop {
+        let accel_val = accel.read().unwrap();
+
         // An example packet, in reality it will be compiled from incoming sensor data
         let conditions = Packet {
             time: Time {    // 10:13:23.132831
@@ -149,21 +162,32 @@ async fn main(spawner: Spawner) {
             alt: 2209,      // 2,209 meters
             temp: 10,       // 10 degrees C
             pres: 7949,     // 794.9 millibars
-            accel: Accel {
-                x: 0,       // 0g
-                y: 2,       // 0.2g
-                z: 13,      // 1.3g
-            },
+            accel_x: (accel_val.x * 10.0) as i16,       // 0g
+            accel_y: (accel_val.y * 10.0) as i16,       // 0.2g
+            accel_z: (accel_val.z * 10.0) as i16,      // 1.3g
         };
-
-        info!("{:?}", conditions);
 
         // Send the data via the second running task
         match transmit_sender.try_send(conditions) {
-            Ok(_) => (),
+            Ok(_) => info!("Sent!"),
             Err(_) => info!("Packet could not be sent to task")
         };
 
-        Timer::after_secs(1).await;
+        Timer::after_millis(100).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn reader(mut rx: UartRx<'static, UART0, Async>) {
+    info!("Reading...");
+    loop {
+        // read a total of 4 transmissions (32 / 8) and then print the result
+        let mut buf = [0; 32];
+        match rx.read(&mut buf).await {
+            Ok(_) => {
+                info!("{:?}", buf);
+            },
+            Err(err) => info!("{:?}", err),
+        }
     }
 }

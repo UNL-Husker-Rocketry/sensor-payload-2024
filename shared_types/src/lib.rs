@@ -17,7 +17,7 @@ pub struct Packet {
     ///
     /// -90.000000deg - 90.000000deg
     #[packed_field(endian="lsb")]
-    #[packed_field(size_bits="29")]
+    #[packed_field(size_bits="28")]
     pub lat: i32,
 
     /// Longitude in degrees * 1,000,000
