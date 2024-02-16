@@ -25,4 +25,3 @@ cortex-m-rt = "0.7.0"
 
 # LoRa and sensors
 sx127x_lora = "0.3.1"
-heapless = "0.8.0"

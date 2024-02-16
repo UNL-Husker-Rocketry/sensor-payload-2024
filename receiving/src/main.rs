@@ -41,7 +41,7 @@ async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
     // Set up USB serial logging and the LED blink
-    let led = Output::new(AnyPin::from(p.PIN_25), Level::High);
+    let led = Output::new(AnyPin::from(p.PIN_13), Level::High);
     spawner.spawn(blink_led(led)).unwrap();
     let driver = Driver::new(p.USB, Irqs);
     spawner.spawn(logger_task(driver)).unwrap();
@@ -78,13 +78,13 @@ async fn main(spawner: Spawner) {
         let poll = lora.poll_irq(Some(20));
 
         match poll {
-            Ok(size) =>{
-                info!("with Payload: ");
+            Ok(_result) => {
                 let buffer = lora.read_packet().unwrap();
                 let packet = Packet::from_buffer(&buffer).unwrap();
-                info!("\n{}", packet.time);
+                info!("SNR: {:?}, RSSI: {:?}", lora.get_packet_snr(), lora.get_packet_rssi());
+                info!("{}", packet.time);
                 info!("Latitude:   {}°", packet.lat as f64 / 1_000_000.0);
-                info!("Longitude: {}°", packet.lon as f64 / 1_000_000.0);
+                info!("Longitude:  {}°", packet.lon as f64 / 1_000_000.0);
                 info!("Altitude:   {}m", packet.alt);
                 info!("Temp:       {}°C", packet.temp as i16 - 272);
                 info!("Pressure:   {}Mb", packet.pres as f32 / 10.0);
@@ -96,7 +96,7 @@ async fn main(spawner: Spawner) {
                     packet.accel_z as f32 / 20.0,
                 );
             },
-            Err(err) => info!("Timeout: {:?}", err),
+            Err(err) => info!("NOT OK: {:?}", err),
         }
 
         Timer::after_millis(100).await;
