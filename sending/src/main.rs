@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![feature(type_alias_impl_trait)]
 
 use embassy_executor::Spawner;
 use embassy_rp::{
@@ -22,9 +23,8 @@ use log::info;
 use {defmt_rtt as _, panic_probe as _};
 use shared_types::{Packet, Time};
 
-use mma8x5x::Mma8x5x;
+use mma8x5x::{Mma8x5x, Measurement};
 use nmea0183::{ParseResult, Parser, GGA, coords::Hemisphere};
-//use embedded_devices::devices::bosch::bmp390::BMP390;
 
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => usb::InterruptHandler<USB>;
@@ -63,7 +63,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(blink_led(led)).unwrap();
 
     // Wait for a bit for everything to start up
-    // NOTE: this along with the serial logging should be removed
+    // NOTE: this along with the USB logging should be removed
     // before being used for real
     Timer::after_secs(2).await;
 
@@ -79,13 +79,15 @@ async fn main(spawner: Spawner) {
     let scl = p.PIN_3;
     let i2c = i2c::I2c::new_async(p.I2C1, scl, sda, Irqs, crate::i2c::Config::default());
 
-    // Pressure/Temp sensor
-    //let mut temp_press = BMP390::new_i2c(i2c, embedded_devices::devices::bosch::bmp390::address::Address::Primary);
-    //temp_press.init(&mut Delay);
-
     // Accelerometer
     let accel = Mma8x5x::new_mma8653(i2c);
-    let mut accel = accel.into_active().ok().unwrap();
+    let mut accel = match accel.into_active() {
+        Ok(device) => Some(device),
+        Err(_) => {
+            error("Accelerometer is disabled");
+            None
+        },
+    };
 
     // Set up all the pins needed for the LoRa module
     // Documentation here: https://learn.adafruit.com/feather-rp2040-rfm95/pinouts
@@ -109,6 +111,8 @@ async fn main(spawner: Spawner) {
     let transmit_sender = TRANSMIT_CHANNEL.sender();
     spawner.spawn(transmitter(TRANSMIT_CHANNEL.receiver(), spi, cs, reset)).unwrap();
 
+    // Start the real time clock with a zeroed-out datetime
+    // We could replace this with reading from the GPS unit
     let mut rtc = Rtc::new(p.RTC);
     let now = DateTime {
         year: 2000,
@@ -119,15 +123,28 @@ async fn main(spawner: Spawner) {
         minute: 0,
         second: 0,
     };
-    rtc.set_datetime(now).unwrap();
+    match rtc.set_datetime(now) {
+        Ok(_) => (),
+        Err(_) => error("Failed to set datetime"),
+    };
 
+    // Stuff for the GPS
     let mut lat = 0;
     let mut lon = 0;
     let mut alt = 0;
-    let mut timer = Instant::now();
-    loop {
-        let accel_val = accel.read().unwrap();
 
+    // A timer for keeping track of sub-second time
+    let mut timer = Instant::now();
+    let mut second = 0;
+
+    loop {
+        // Grab a new acceleration value
+        let accel_val = match accel {
+            Some(ref mut accel) => accel.read().unwrap_or_default(),
+            None => Measurement::default(),
+        };
+
+        let mut realtime_now = rtc.now().unwrap(); // This unwrap is safe; it must be running
         if let Ok(gga) = gps_receiver.try_receive() { // Got new GPS data, update things which need updating
             let now = DateTime {
                 year: 2000,
@@ -138,9 +155,14 @@ async fn main(spawner: Spawner) {
                 minute: gga.time.minutes,
                 second: gga.time.seconds as u8,
             };
-            rtc.set_datetime(now).unwrap();
+            match rtc.set_datetime(now) {
+                Ok(_) => (),
+                Err(_) => error("Failed to set datetime"),
+            };
             timer = Instant::now();
+            realtime_now = rtc.now().unwrap();
 
+            // Set all the position data
             alt = gga.altitude.meters as i32;
             lat = (to_decimal(
                 gga.latitude.degrees,
@@ -154,24 +176,24 @@ async fn main(spawner: Spawner) {
                 gga.longitude.seconds,
                 gga.longitude.hemisphere
             ) * 1_000_000.0) as i32;
+        } else if second != realtime_now.second { // The second must have advanced, update the subsecond timer
+            timer = Instant::now();
+            second = realtime_now.second
         }
 
-        let rtc_now = rtc.now().unwrap();
-        let time = Time {
-            hours: rtc_now.hour,
-            minutes: rtc_now.minute,
-            seconds: rtc_now.second,
-            microseconds: (timer.elapsed().as_micros() % 1_000_000 )as u32,
-        };
-
-        // An example packet, in reality it will be compiled from incoming sensor data
+        // Build the packet
         let conditions = Packet {
-            time,
+            time: Time {
+                hours: realtime_now.hour,
+                minutes: realtime_now.minute,
+                seconds: realtime_now.second,
+                microseconds: (timer.elapsed().as_micros() % 1_000_000) as u32,
+            },
             lat,
             lon,
             alt,
-            temp: 290,
-            pres: 7949,
+            temp: 290, // TODO: Must come from the sensor!
+            pres: 7949,// TODO: Must come from the sensor!
             accel_x: (accel_val.x * 10.0) as i16,
             accel_y: (accel_val.y * 10.0) as i16,
             accel_z: (accel_val.z * 10.0) as i16,
@@ -206,6 +228,7 @@ async fn transmitter(
     };
 
     let _ = lora.set_tx_power(20, 1);
+    let _ = lora.set_crc(true);
 
     loop {
         let message = channel_rec.receive().await;
@@ -269,4 +292,8 @@ fn to_decimal(hours: u8, minutes: u8, seconds: f32, hemisphere: Hemisphere) -> f
     }
 
     deg
+}
+
+fn error(err: &str) {
+    info!("ERR: {}", err);
 }

@@ -69,10 +69,10 @@ async fn main(spawner: Spawner) {
     let cs = Output::new(rfm_cs, Level::Low);
     let reset = Output::new(rfm_rst, Level::Low);
 
-    // Actually initialize the LoRa module and then set the transmit power
-    // 915 is the frequency (in MHz), 5 is the power (in dB)
+    // Actually initialize the LoRa module
     let mut lora =
         sx127x_lora::LoRa::new(spi, cs, reset, 915, Delay).expect("Could not initalize module!");
+    let _ = lora.set_crc(true);
 
     loop {
         let poll = lora.poll_irq(Some(20));
