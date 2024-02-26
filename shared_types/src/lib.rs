@@ -123,6 +123,6 @@ pub struct Time {
 
 impl Display for Time {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}:{}:{}.{}", self.hours, self.minutes, self.seconds, self.microseconds)
+        write!(f, "{:02}:{:02}:{:02}.{:06}", self.hours, self.minutes, self.seconds, self.microseconds)
     }
 }
