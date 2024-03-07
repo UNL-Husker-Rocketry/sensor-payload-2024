@@ -1,7 +1,7 @@
 #![no_std]
 
 use core::fmt::Display;
-
+use defmt::Format;
 use packed_struct::prelude::*;
 
 /// A standard packet for transmission of basic telemetry
@@ -99,7 +99,7 @@ impl Packet {
 }
 
 /// Time
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Format)]
 #[derive(PackedStruct)]
 #[packed_struct(bit_numbering="msb0")]
 pub struct Time {

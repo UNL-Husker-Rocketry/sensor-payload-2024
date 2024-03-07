@@ -28,3 +28,5 @@ cortex-m-rt = "0.7.0"
 sx127x_lora = "0.3.1"
 mma8x5x = "0.1.1"
 nmea0183 = "0.4"
+bmp388 = "0.1.0"
+shared-bus = { version = "0.3.1", features = ["cortex-m"] }

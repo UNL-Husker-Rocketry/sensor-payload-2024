@@ -81,16 +81,15 @@ async fn main(spawner: Spawner) {
             Ok(_result) => {
                 let buffer = lora.read_packet().unwrap();
                 let packet = Packet::from_buffer(&buffer).unwrap();
-                info!("SNR: {:?}, RSSI: {:?}", lora.get_packet_snr(), lora.get_packet_rssi());
-                info!("{}", packet.time);
-                info!("Latitude:   {}°", packet.lat as f64 / 1_000_000.0);
-                info!("Longitude:  {}°", packet.lon as f64 / 1_000_000.0);
-                info!("Altitude:   {}m", packet.alt);
-                info!("Temp:       {}°C", packet.temp as i16 - 272);
-                info!("Pressure:   {}Mb", packet.pres as f32 / 10.0);
-                info!("Acceleration:");
-                info!(
-                    "  X: {}\n  Y: {}\n  Z: {}",
+
+                // Package the packet into a single serial line
+                info!("{},{},{},{},{},{},{},{},{}",
+                    packet.time,
+                    packet.lat as f64 / 1_000_000.0,
+                    packet.lon as f64 / 1_000_000.0,
+                    packet.alt,
+                    packet.temp,
+                    packet.pres as f32 / 10.0,
                     packet.accel_x as f32 / 20.0,
                     packet.accel_y as f32 / 20.0,
                     packet.accel_z as f32 / 20.0,

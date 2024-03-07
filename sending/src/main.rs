@@ -4,14 +4,7 @@
 
 use embassy_executor::Spawner;
 use embassy_rp::{
-    bind_interrupts,
-    gpio::{self, AnyPin},
-    peripherals::{USB, SPI1, UART1, I2C1},
-    spi::{Spi, Blocking},
-    i2c,
-    usb::{self, Driver},
-    uart::{self, UartRx, Async},
-    rtc::{Rtc, DateTime},
+    bind_interrupts, gpio::{self, AnyPin}, i2c::{self, I2c}, peripherals::{I2C1, SPI1, UART1, USB}, rtc::{DateTime, Rtc}, spi::{Blocking, Spi}, uart::{self, Async, UartRx}, usb::{self, Driver}
 };
 use embassy_sync::{
     blocking_mutex::raw::ThreadModeRawMutex,
@@ -23,6 +16,7 @@ use log::info;
 use {defmt_rtt as _, panic_probe as _};
 use shared_types::{Packet, Time};
 
+use bmp388::BMP388;
 use mma8x5x::{Mma8x5x, Measurement};
 use nmea0183::{ParseResult, Parser, GGA, coords::Hemisphere};
 
@@ -78,9 +72,11 @@ async fn main(spawner: Spawner) {
     let sda = p.PIN_2;
     let scl = p.PIN_3;
     let i2c = i2c::I2c::new_async(p.I2C1, scl, sda, Irqs, crate::i2c::Config::default());
+    let i2c_bus: &'static _ = shared_bus::new_cortexm!(I2c<I2C1, i2c::Async> = i2c).unwrap();
 
     // Accelerometer
-    let accel = Mma8x5x::new_mma8653(i2c);
+    let mut accel = Mma8x5x::new_mma8451(i2c_bus.acquire_i2c(), mma8x5x::SlaveAddr::default());
+    let _ = accel.set_scale(mma8x5x::GScale::G8);
     let mut accel = match accel.into_active() {
         Ok(device) => Some(device),
         Err(_) => {
@@ -88,6 +84,9 @@ async fn main(spawner: Spawner) {
             None
         },
     };
+
+    // Temperature/Pressure
+    let mut bmp = BMP388::new(i2c_bus.acquire_i2c()).unwrap();
 
     // Set up all the pins needed for the LoRa module
     // Documentation here: https://learn.adafruit.com/feather-rp2040-rfm95/pinouts
@@ -109,7 +108,7 @@ async fn main(spawner: Spawner) {
 
     // Set up the LoRa transmitter
     let transmit_sender = TRANSMIT_CHANNEL.sender();
-    spawner.spawn(transmitter(TRANSMIT_CHANNEL.receiver(), spi, cs, reset)).unwrap();
+    spawner.spawn(transmitter(TRANSMIT_CHANNEL.receiver(), spi, cs, reset, 17)).unwrap();
 
     // Start the real time clock with a zeroed-out datetime
     // We could replace this with reading from the GPS unit
@@ -181,6 +180,10 @@ async fn main(spawner: Spawner) {
             second = realtime_now.second
         }
 
+        let press_temp = bmp.sensor_values().unwrap();
+
+        info!("{:?}", press_temp);
+
         // Build the packet
         let conditions = Packet {
             time: Time {
@@ -192,8 +195,8 @@ async fn main(spawner: Spawner) {
             lat,
             lon,
             alt,
-            temp: 290, // TODO: Must come from the sensor!
-            pres: 7949,// TODO: Must come from the sensor!
+            temp: (press_temp.temperature - 273.15) as u16,
+            pres: (press_temp.pressure * 10.0) as u16,
             accel_x: (accel_val.x * 10.0) as i16,
             accel_y: (accel_val.y * 10.0) as i16,
             accel_z: (accel_val.z * 10.0) as i16,
@@ -213,10 +216,10 @@ async fn main(spawner: Spawner) {
 #[embassy_executor::task]
 async fn transmitter(
     channel_rec: Receiver<'static, ThreadModeRawMutex, Packet, 1>,
-
     spi:    Spi<'static, SPI1, Blocking>,
     cs:     Output<'static, AnyPin>,
     reset:  Output<'static, AnyPin>,
+    power:  i32,
 ) {
     // Initialize the LoRa module and then set the transmit power
     // 915 is the frequency (in MHz), 17 is the transmission power (in dB)
@@ -227,7 +230,7 @@ async fn transmitter(
         },
     };
 
-    let _ = lora.set_tx_power(20, 1);
+    let _ = lora.set_tx_power(power, 1);
     let _ = lora.set_crc(true);
 
     loop {
