@@ -4,14 +4,15 @@
 
 use embassy_executor::Spawner;
 use embassy_rp::{
-    bind_interrupts, gpio::{self, AnyPin}, i2c::{self, I2c}, peripherals::{I2C1, SPI1, UART1, USB}, rtc::{DateTime, Rtc}, spi::{Blocking, Spi}, uart::{self, Async, UartRx}, usb::{self, Driver}
+    bind_interrupts, gpio::{AnyPin, Level, Output}, i2c, peripherals::{I2C1, SPI1, UART1, USB}, rtc::{DateTime, Rtc}, spi::{Blocking, Spi}, uart::{self, Async, UartRx}, usb::{self, Driver}
 };
+use embassy_embedded_hal::adapter::BlockingAsync;
 use embassy_sync::{
     blocking_mutex::raw::ThreadModeRawMutex,
     channel::{Channel, Receiver, Sender},
 };
 use embassy_time::{Delay, Timer, Instant};
-use gpio::{Level, Output};
+
 use log::info;
 use {defmt_rtt as _, panic_probe as _};
 use shared_types::{Packet, Time};
@@ -71,8 +72,8 @@ async fn main(spawner: Spawner) {
     // Set up I2C stuff
     let sda = p.PIN_2;
     let scl = p.PIN_3;
-    let i2c = i2c::I2c::new_async(p.I2C1, scl, sda, Irqs, crate::i2c::Config::default());
-    let i2c_bus: &'static _ = shared_bus::new_cortexm!(I2c<I2C1, i2c::Async> = i2c).unwrap();
+    let i2c_main = i2c::I2c::new_async(p.I2C1, scl, sda, Irqs, crate::i2c::Config::default());
+    let i2c_bus = shared_bus::BusManagerSimple::new(i2c_main);
 
     // Accelerometer
     let mut accel = Mma8x5x::new_mma8451(i2c_bus.acquire_i2c(), mma8x5x::SlaveAddr::default());
@@ -86,9 +87,18 @@ async fn main(spawner: Spawner) {
     };
 
     // Temperature/Pressure
-    let mut bmp = BMP388::new(i2c_bus.acquire_i2c()).unwrap();
+    let mut bmp = BMP388::new(
+        BlockingAsync::new(i2c_bus.acquire_i2c()),
+        bmp388::Addr::Primary as u8,
+        &mut Delay
+    ).await.unwrap();
+    bmp.set_power_control(bmp388::PowerControl {
+        pressure_enable: true,
+        temperature_enable: true,
+        mode: bmp388::PowerMode::Normal
+    }).await.unwrap();
 
-    // Set up all the pins needed for the LoRa module
+    // Set up all the pins needed for the LoRa module SPI
     // Documentation here: https://learn.adafruit.com/feather-rp2040-rfm95/pinouts
     // And here: https://github.com/mr-glt/sx127x_lora
     let miso    = p.PIN_8;
@@ -143,6 +153,10 @@ async fn main(spawner: Spawner) {
             None => Measurement::default(),
         };
 
+        let press_temp = bmp.sensor_values().await.unwrap();
+
+        info!("{:?}", press_temp);
+
         let mut realtime_now = rtc.now().unwrap(); // This unwrap is safe; it must be running
         if let Ok(gga) = gps_receiver.try_receive() { // Got new GPS data, update things which need updating
             let now = DateTime {
@@ -179,10 +193,6 @@ async fn main(spawner: Spawner) {
             timer = Instant::now();
             second = realtime_now.second
         }
-
-        let press_temp = bmp.sensor_values().unwrap();
-
-        info!("{:?}", press_temp);
 
         // Build the packet
         let conditions = Packet {
