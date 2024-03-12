@@ -1,10 +1,6 @@
 #![no_std]
 
 use core::fmt::Display;
-<<<<<<< HEAD
-=======
-use defmt::Format;
->>>>>>> 12e133fc9768783eff76be7ef95b4abaad5a97f8
 use packed_struct::prelude::*;
 use bincode::Encode;
 
@@ -109,11 +105,7 @@ impl Packet {
 }
 
 /// Time
-<<<<<<< HEAD
 #[derive(Clone, Copy, Debug, Default, Encode)]
-=======
-#[derive(Clone, Copy, Debug, Default, Format)]
->>>>>>> 12e133fc9768783eff76be7ef95b4abaad5a97f8
 #[derive(PackedStruct)]
 #[packed_struct(bit_numbering="msb0")]
 pub struct Time {
