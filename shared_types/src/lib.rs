@@ -1,11 +1,11 @@
 #![no_std]
 
 use core::fmt::Display;
-
 use packed_struct::prelude::*;
+use bincode::Encode;
 
 /// A standard packet for transmission of basic telemetry
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Encode)]
 #[derive(PackedStruct)]
 #[packed_struct(bit_numbering="msb0")]
 pub struct Packet {
@@ -86,6 +86,12 @@ impl Packet {
         (bytes, byte_temp.len() as u8)
     }
 
+    pub fn to_bytes(&self) -> [u8; 32] {
+        let mut array = [0u8; 32];
+        bincode::encode_into_slice(self, &mut array[0..32], bincode::config::legacy()).unwrap();
+        array
+    }
+
     /// Takes in a buffer and unpacks the bit-packing to return a
     /// new [Packet] with the original data.
     pub fn from_buffer(buffer: &[u8]) -> Result<Self, PackingError> {
@@ -99,7 +105,7 @@ impl Packet {
 }
 
 /// Time
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Encode)]
 #[derive(PackedStruct)]
 #[packed_struct(bit_numbering="msb0")]
 pub struct Time {
