@@ -1,6 +1,10 @@
 #![no_std]
 
 use core::fmt::Display;
+<<<<<<< HEAD
+=======
+use defmt::Format;
+>>>>>>> 12e133fc9768783eff76be7ef95b4abaad5a97f8
 use packed_struct::prelude::*;
 use bincode::Encode;
 
@@ -105,7 +109,11 @@ impl Packet {
 }
 
 /// Time
+<<<<<<< HEAD
 #[derive(Clone, Copy, Debug, Default, Encode)]
+=======
+#[derive(Clone, Copy, Debug, Default, Format)]
+>>>>>>> 12e133fc9768783eff76be7ef95b4abaad5a97f8
 #[derive(PackedStruct)]
 #[packed_struct(bit_numbering="msb0")]
 pub struct Time {
@@ -129,6 +137,6 @@ pub struct Time {
 
 impl Display for Time {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}:{}:{}.{}", self.hours, self.minutes, self.seconds, self.microseconds)
+        write!(f, "{:02}:{:02}:{:02}.{:06}", self.hours, self.minutes, self.seconds, self.microseconds)
     }
 }
