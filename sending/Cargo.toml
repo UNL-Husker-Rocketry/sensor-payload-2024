@@ -1,7 +1,7 @@
 [package]
 name = "sensor-sending"
 authors.workspace = true
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
@@ -11,7 +11,8 @@ embassy-time = { version = "0.3.0", features = ["defmt"] }
 embassy-usb-logger = "0.1.0"
 embassy-sync = "0.5.0"
 embassy-embedded-hal = "0.1.0"
-shared-bus = "0.3.1"
+static_cell = "2.0.0"
+portable-atomic = { version = "1.6.0", features = ["unsafe-assume-single-core"] }
 
 # Data and packet handling
 shared-types = { path = "../shared_types/" }
@@ -28,6 +29,6 @@ cortex-m-rt = "0.7.0"
 
 # LoRa and sensors
 sx127x_lora = "0.3.1"
-mma8x5x = "0.1.1"
-nmea0183 = "0.4"
-bmp388 = { path = "/home/g2/Documents/projects/Rocketry/bmp388/", features=["asynch"] }
+mma8x5x = { path = "../../mma8x5x-rs" }
+bmp388 = { path = "../../bmp388/", features=["asynch"] }
+nmea0183 = "0.4.0"

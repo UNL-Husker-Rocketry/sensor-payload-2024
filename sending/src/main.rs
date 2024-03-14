@@ -2,24 +2,44 @@
 #![no_main]
 #![feature(type_alias_impl_trait)]
 
+// Main board control stuff
+use core::cell::RefCell;
+use embassy_embedded_hal::{
+    adapter::BlockingAsync,
+    shared_bus::blocking::i2c::I2cDevice
+};
+use embassy_sync::{
+    channel::{Channel, Receiver, Sender},
+    blocking_mutex::{raw::ThreadModeRawMutex, NoopMutex},
+};
 use embassy_executor::Spawner;
 use embassy_rp::{
-    bind_interrupts, gpio::{AnyPin, Level, Output}, i2c, peripherals::{I2C1, SPI1, UART1, USB}, rtc::{DateTime, Rtc}, spi::{Blocking, Spi}, uart::{self, Async, UartRx}, usb::{self, Driver}
+    bind_interrupts,
+    gpio::{AnyPin, Level, Output},
+    i2c,
+    peripherals::{I2C1, SPI1, UART1, USB},
+    rtc::{DateTime, Rtc},
+    spi::{Blocking, Spi},
+    uart,
+    usb::{self, Driver}
 };
-use embassy_embedded_hal::adapter::BlockingAsync;
-use embassy_sync::{
-    blocking_mutex::raw::ThreadModeRawMutex,
-    channel::{Channel, Receiver, Sender},
-};
-use embassy_time::{Delay, Timer, Instant};
+use embassy_time::{with_timeout, Delay, Duration, Instant, Timer};
 
-use log::info;
-use {defmt_rtt as _, panic_probe as _};
+// Packet and time structs
 use shared_types::{Packet, Time};
 
+// Error handling and printing
+use log::info;
+use static_cell::StaticCell;
+use {defmt_rtt as _, panic_probe as _};
+
+// Sensor data processing
+use mma8x5x::Mma8x5x;
 use bmp388::BMP388;
-use mma8x5x::{Mma8x5x, Measurement};
-use nmea0183::{ParseResult, Parser, GGA, coords::Hemisphere};
+use nmea0183::{
+    coords::Hemisphere,
+    ParseResult, Parser, GGA
+};
 
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => usb::InterruptHandler<USB>;
@@ -29,12 +49,14 @@ bind_interrupts!(struct Irqs {
 
 #[embassy_executor::task]
 async fn logger_task(driver: Driver<'static, USB>) {
-    embassy_usb_logger::run!(1024, log::LevelFilter::Info, driver);
+    dev_init("USB logging");
+    embassy_usb_logger::run!(8192, log::LevelFilter::Info, driver);
 }
 
 /// Set up a task to blink the LED
 #[embassy_executor::task]
 async fn blink_led(mut led: Output<'static, AnyPin>) {
+    dev_init("Debug blinker");
     loop {
         led.set_high();
         Timer::after_secs(1).await;
@@ -44,6 +66,7 @@ async fn blink_led(mut led: Output<'static, AnyPin>) {
     }
 }
 
+static I2C_BUS: StaticCell<NoopMutex<RefCell<i2c::I2c<'_, I2C1, i2c::Blocking>>>> = StaticCell::new();
 static TRANSMIT_CHANNEL: Channel<ThreadModeRawMutex, Packet, 1> = Channel::new();
 static GPS_CHANNEL: Channel<ThreadModeRawMutex, GGA, 1> = Channel::new();
 
@@ -57,46 +80,15 @@ async fn main(spawner: Spawner) {
     let led = Output::new(AnyPin::from(p.PIN_13), Level::Low);
     spawner.spawn(blink_led(led)).unwrap();
 
-    // Wait for a bit for everything to start up
-    // NOTE: this along with the USB logging should be removed
-    // before being used for real
-    Timer::after_secs(2).await;
+    Timer::after_millis(2000).await;
+    info!("\x1b[0;35mSensor Payload Firmware v0.2.0 start!\x1b[0m");
 
     // Set up the UART (GPS)
     let mut uart_config = uart::Config::default();
     uart_config.baudrate = 9600;
-    let uart_rx = UartRx::new(p.UART1, p.PIN_5, Irqs, p.DMA_CH1, uart_config);
+    let uart_rx = uart::UartRx::new(p.UART1, p.PIN_5, Irqs, p.DMA_CH1, uart_config);
     let gps_receiver = GPS_CHANNEL.receiver();
     spawner.spawn(gps_reader(uart_rx, GPS_CHANNEL.sender())).unwrap();
-
-    // Set up I2C stuff
-    let sda = p.PIN_2;
-    let scl = p.PIN_3;
-    let i2c_main = i2c::I2c::new_async(p.I2C1, scl, sda, Irqs, crate::i2c::Config::default());
-    let i2c_bus = shared_bus::BusManagerSimple::new(i2c_main);
-
-    // Accelerometer
-    let mut accel = Mma8x5x::new_mma8451(i2c_bus.acquire_i2c(), mma8x5x::SlaveAddr::default());
-    let _ = accel.set_scale(mma8x5x::GScale::G8);
-    let mut accel = match accel.into_active() {
-        Ok(device) => Some(device),
-        Err(_) => {
-            error("Accelerometer is disabled");
-            None
-        },
-    };
-
-    // Temperature/Pressure
-    let mut bmp = BMP388::new(
-        BlockingAsync::new(i2c_bus.acquire_i2c()),
-        bmp388::Addr::Primary as u8,
-        &mut Delay
-    ).await.unwrap();
-    bmp.set_power_control(bmp388::PowerControl {
-        pressure_enable: true,
-        temperature_enable: true,
-        mode: bmp388::PowerMode::Normal
-    }).await.unwrap();
 
     // Set up all the pins needed for the LoRa module SPI
     // Documentation here: https://learn.adafruit.com/feather-rp2040-rfm95/pinouts
@@ -108,17 +100,67 @@ async fn main(spawner: Spawner) {
     let rfm_rst = AnyPin::from(p.PIN_17); // Reset
 
     // Set up the SPI interface
-    let mut config = embassy_rp::spi::Config::default();
-    config.frequency = 20_000;
-    let spi = Spi::new_blocking(p.SPI1, clk, mosi, miso, config);
-
-    // Set up Chip Select and Reset
+    let mut spi_config = embassy_rp::spi::Config::default();
+    spi_config.frequency = 20_000;
+    let spi = Spi::new_blocking(p.SPI1, clk, mosi, miso, spi_config);
     let cs = Output::new(rfm_cs, Level::Low);
     let reset = Output::new(rfm_rst, Level::Low);
 
     // Set up the LoRa transmitter
     let transmit_sender = TRANSMIT_CHANNEL.sender();
-    spawner.spawn(transmitter(TRANSMIT_CHANNEL.receiver(), spi, cs, reset, 17)).unwrap();
+    spawner.spawn(transmitter(TRANSMIT_CHANNEL.receiver(), spi, cs, reset, 14)).unwrap();
+
+    // Set up I2C stuff
+    let sda = p.PIN_2;
+    let scl = p.PIN_3;
+    let i2c_config = i2c::Config::default();
+    let i2c_main = i2c::I2c::new_blocking(p.I2C1, scl, sda, i2c_config);
+    let i2c_bus = NoopMutex::new(RefCell::new(i2c_main));
+    let i2c_bus = I2C_BUS.init(i2c_bus);
+
+    // Accelerometer
+    let mut accel = Mma8x5x::new_mma8451(
+        I2cDevice::new(i2c_bus),
+        mma8x5x::SlaveAddr::Alternative(true)
+    );
+    let _ = accel.disable_auto_sleep();
+    let _ = accel.set_read_mode(mma8x5x::ReadMode::Fast);
+    let _ = accel.set_scale(mma8x5x::GScale::G8);
+    let mut accel = match accel.into_active() {
+        Ok(device) => {
+            dev_init("Accelerometer (MMA8451)");
+            Some(device)
+        },
+        Err(_) => {
+            error("Accelerometer (MMA8451) is disabled");
+            None
+        },
+    };
+
+    // Temperature/Pressure
+    let mut bmp = match BMP388::new(
+        BlockingAsync::new(I2cDevice::new(i2c_bus)),
+        bmp388::Addr::Secondary as u8,
+        &mut Delay
+    ).await {
+        Ok(device) => Some(device),
+        Err(err) => {
+            info!("{:?}", err);
+            error("Temperature and Pressure (BMP388) are disabled");
+            None
+        },
+    };
+    match bmp {
+        Some(ref mut dev) => {
+            let _ = dev.set_power_control(bmp388::PowerControl {
+                pressure_enable: true,
+                temperature_enable: true,
+                mode: bmp388::PowerMode::Normal
+            }).await;
+            dev_init("Temp/Pressure (BMP388)");
+        },
+        None => (),
+    }
 
     // Start the real time clock with a zeroed-out datetime
     // We could replace this with reading from the GPS unit
@@ -137,7 +179,7 @@ async fn main(spawner: Spawner) {
         Err(_) => error("Failed to set datetime"),
     };
 
-    // Stuff for the GPS
+     // Stuff for the GPS
     let mut lat = 0;
     let mut lon = 0;
     let mut alt = 0;
@@ -146,16 +188,19 @@ async fn main(spawner: Spawner) {
     let mut timer = Instant::now();
     let mut second = 0;
 
+    begin("Main Loop");
     loop {
-        // Grab a new acceleration value
+        // Get the new acceleration data
         let accel_val = match accel {
             Some(ref mut accel) => accel.read().unwrap_or_default(),
-            None => Measurement::default(),
+            None => mma8x5x::Measurement::default(),
         };
 
-        let press_temp = bmp.sensor_values().await.unwrap();
-
-        info!("{:?}", press_temp);
+        // Get the new temperature data
+        let pres_temp_val = match bmp {
+            Some(ref mut dev) => dev.sensor_values().await.unwrap_or_default(),
+            None => bmp388::SensorData::default(),
+        };
 
         let mut realtime_now = rtc.now().unwrap(); // This unwrap is safe; it must be running
         if let Ok(gga) = gps_receiver.try_receive() { // Got new GPS data, update things which need updating
@@ -205,20 +250,47 @@ async fn main(spawner: Spawner) {
             lat,
             lon,
             alt,
-            temp: (press_temp.temperature - 273.15) as u16,
-            pres: (press_temp.pressure * 10.0) as u16,
+            temp: (pres_temp_val.temperature + 273.15) as u16,
+            pres: (pres_temp_val.pressure / 10.0) as u16,
             accel_x: (accel_val.x * 10.0) as i16,
             accel_y: (accel_val.y * 10.0) as i16,
             accel_z: (accel_val.z * 10.0) as i16,
         };
 
-        // Send the data via the second running task
         match transmit_sender.try_send(conditions) {
             Ok(_) => (),
-            Err(_) => info!("Packet could not be sent to task")
+            Err(_) => error("Transmission failed."),
         };
 
         Timer::after_millis(100).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn gps_reader(
+    mut rx: uart::UartRx<'static,UART1, uart::Async> ,
+    channel_sender: Sender<'static, ThreadModeRawMutex, GGA, 1>,
+) {
+    dev_init("GPS (MTK3339)");
+    let mut parser = Parser::new();
+    begin("GPS Loop");
+    loop {
+        let mut buf = [0; 128];
+        // Wait for new data from the GPS module
+        let _ = match with_timeout(Duration::from_secs(5), rx.read(&mut buf)).await {
+            Ok(_) => (),
+            Err(_) => error("GPS timed out"),
+        };
+
+        for result in parser.parse_from_bytes(&buf) {
+            match result {
+                Ok(ParseResult::GGA(Some(gga))) => {
+                    let _ = channel_sender.try_send(gga);
+                },
+                Ok(_) => (),
+                Err(_) => warn("GPS data could not be parsed"),
+            }
+        }
     }
 }
 
@@ -232,17 +304,18 @@ async fn transmitter(
     power:  i32,
 ) {
     // Initialize the LoRa module and then set the transmit power
-    // 915 is the frequency (in MHz), 17 is the transmission power (in dB)
+    // 915 is the frequency (in MHz)
     let mut lora = match sx127x_lora::LoRa::new(spi, cs, reset, 915, Delay) {
         Ok(module) => module,
-        Err(_) => {
-            return
-        },
+        Err(_) => return,
     };
+    dev_init("LoRa (Sx127x)");
 
-    let _ = lora.set_tx_power(power, 1);
+    let _ = lora.set_tx_power(power, 0);
+    let _ = lora.set_ocp(240);
     let _ = lora.set_crc(true);
 
+    begin("Transmission Loop");
     loop {
         let message = channel_rec.receive().await;
 
@@ -255,12 +328,8 @@ async fn transmitter(
         while transmit_status.is_ok_and(|x| x)
             && time.elapsed().as_millis() < 1000
         {
-            Timer::after_millis(2).await;
+            Timer::after_millis(20).await;
             transmit_status = lora.transmitting();
-        }
-
-        if time.elapsed().as_millis() > 1000 {
-            return
         }
 
         // Transmit the item
@@ -268,30 +337,7 @@ async fn transmitter(
 
         // Make sure it didn't fail
         if transmit.is_err() {
-            info!("Err!")
-        }
-    }
-}
-
-#[embassy_executor::task]
-async fn gps_reader(
-    mut rx: UartRx<'static, UART1, Async>,
-    channel_sender: Sender<'static, ThreadModeRawMutex, GGA, 1>,
-) {
-    info!("Begin Reading GPS Module...");
-    let mut parser = Parser::new();
-    loop {
-        let mut buf = [0; 128];
-        let _ = rx.read(&mut buf).await; // Wait for new data from the GPS module
-
-        for result in parser.parse_from_bytes(&buf) {
-            match result {
-                Ok(ParseResult::GGA(Some(gga))) => {
-                    let _ = channel_sender.try_send(gga);
-                },
-                Ok(_) => (),
-                Err(_) => (),
-            }
+            error("Failed to transmit")
         }
     }
 }
@@ -307,6 +353,22 @@ fn to_decimal(hours: u8, minutes: u8, seconds: f32, hemisphere: Hemisphere) -> f
     deg
 }
 
+#[inline]
 fn error(err: &str) {
-    info!("ERR: {}", err);
+    info!("\x1b[0;31mERR:\x1b[0m {}", err);
+}
+
+#[inline]
+fn warn(warn: &str) {
+    info!("\x1b[0;33mWARN:\x1b[0m {}", warn);
+}
+
+#[inline]
+fn dev_init(dev: &str) {
+    info!("\x1b[0;92mINIT:\x1b[0m {}", dev);
+}
+
+#[inline]
+fn begin(thing: &str) {
+    info!("\x1b[0;34mBEGIN:\x1b[0m {}", thing);
 }
