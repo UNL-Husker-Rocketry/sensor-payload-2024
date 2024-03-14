@@ -21,7 +21,8 @@ use embassy_rp::{
     rtc::{DateTime, Rtc},
     spi::{Blocking, Spi},
     uart,
-    usb::{self, Driver}
+    usb::{self, Driver},
+    watchdog::*
 };
 use embassy_time::{with_timeout, Delay, Duration, Instant, Timer};
 
@@ -73,6 +74,7 @@ static GPS_CHANNEL: Channel<ThreadModeRawMutex, GGA, 1> = Channel::new();
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
+    let mut watchdog = Watchdog::new(p.WATCHDOG);
 
     // Set up USB serial logging and the LED blink tasks
     let driver = Driver::new(p.USB, Irqs);
@@ -189,6 +191,7 @@ async fn main(spawner: Spawner) {
     let mut second = 0;
 
     begin("Main Loop");
+    watchdog.start(Duration::from_millis(1_000));
     loop {
         // Get the new acceleration data
         let accel_val = match accel {
@@ -280,6 +283,7 @@ async fn main(spawner: Spawner) {
             Err(_) => error("Transmission failed."),
         };
 
+        watchdog.feed();
         Timer::after_millis(100).await;
     }
 }
