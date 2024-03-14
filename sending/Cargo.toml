@@ -30,5 +30,5 @@ cortex-m-rt = "0.7.0"
 # LoRa and sensors
 sx127x_lora = "0.3.1"
 mma8x5x = { path = "../../mma8x5x-rs" }
-bmp388 = { path = "../../bmp388/", features=["asynch"] }
+bmp388 = { git = "https://github.com/ibutra/bmp388.git", features=["asynch"] }
 nmea0183 = "0.4.0"

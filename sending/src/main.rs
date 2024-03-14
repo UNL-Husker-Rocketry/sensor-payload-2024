@@ -192,14 +192,32 @@ async fn main(spawner: Spawner) {
     loop {
         // Get the new acceleration data
         let accel_val = match accel {
-            Some(ref mut accel) => accel.read().unwrap_or_default(),
+            Some(ref mut accel) => match accel.read() {
+                Ok(val) => val,
+                Err(_) => {
+                    error("Failed to read MMA8451!");
+                    mma8x5x::Measurement::default()
+                },
+            },
             None => mma8x5x::Measurement::default(),
         };
 
         // Get the new temperature data
         let pres_temp_val = match bmp {
-            Some(ref mut dev) => dev.sensor_values().await.unwrap_or_default(),
-            None => bmp388::SensorData::default(),
+            Some(ref mut dev) => match dev.sensor_values().await {
+                Ok(val) => val,
+                Err(_) => {
+                    error("Failed to read BMP388!");
+                    bmp388::SensorData {
+                        pressure: 0.0,
+                        temperature: 0.0,
+                    }
+                },
+            },
+            None => bmp388::SensorData {
+                pressure: 0.0,
+                temperature: 0.0,
+            },
         };
 
         let mut realtime_now = rtc.now().unwrap(); // This unwrap is safe; it must be running
