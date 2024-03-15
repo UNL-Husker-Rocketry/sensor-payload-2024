@@ -218,8 +218,9 @@ impl Handler for ControlHandler<'_> {
         };
 
         if result.is_none() {
-            buf[..0x20].copy_from_slice(&[0xFA; 0x20]);
-            return Some(InResponse::Accepted(&buf[..0x20]))
+            buf[..0x4].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+            buf[0x4..0x20].copy_from_slice(&[0x00; 0x1C]);
+            return Some(InResponse::Rejected)
         }
 
         let res_slice = result.unwrap().to_bytes();
