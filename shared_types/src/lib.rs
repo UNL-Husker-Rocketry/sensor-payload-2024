@@ -5,7 +5,7 @@ use packed_struct::prelude::*;
 use bincode::Encode;
 
 /// A standard packet for transmission of basic telemetry
-#[derive(Clone, Copy, Debug, Encode)]
+#[derive(Default, Clone, Copy, Debug, Encode)]
 #[derive(PackedStruct)]
 #[packed_struct(bit_numbering="msb0")]
 pub struct Packet {

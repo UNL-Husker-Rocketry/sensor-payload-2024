@@ -13,7 +13,6 @@ use embassy_sync::{channel::{Channel, Receiver, Sender}, blocking_mutex::raw::Th
 use embassy_time::{Delay, Timer};
 use embassy_usb::{msos::{windows_version, self}, Builder, types::InterfaceNumber, Config, control::{OutResponse, RequestType, Recipient, Request, InResponse}, Handler};
 use gpio::{Level, Output};
-use log::info;
 use shared_types::Packet;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -85,26 +84,16 @@ async fn main(spawner: Spawner) {
     let data_send = RECEIVE_CHANNEL.sender();
 
     loop {
+        // Wait for a request to receive a new packet
         data_request.receive().await;
+
+        // Actually receive the new packet
         let poll = lora.poll_irq(Some(20));
 
         match poll {
-            Ok(_result) => {
+            Ok(_) => {
                 let buffer = lora.read_packet().unwrap();
                 let packet = Packet::from_buffer(&buffer).unwrap();
-                info!("{}", packet.time);
-                info!("Latitude:   {}°", packet.lat as f64 / 1_000_000.0);
-                info!("Longitude:  {}°", packet.lon as f64 / 1_000_000.0);
-                info!("Altitude:   {}m", packet.alt);
-                info!("Temp:       {}°C", packet.temp as i16 - 272);
-                info!("Pressure:   {}Mb", packet.pres as f32 / 10.0);
-                info!("Acceleration:");
-                info!(
-                    "  X: {}\n  Y: {}\n  Z: {}",
-                    packet.accel_x as f32 / 20.0,
-                    packet.accel_y as f32 / 20.0,
-                    packet.accel_z as f32 / 20.0,
-                );
                 let _ = data_send.send(Some(packet));
             },
             Err(_) => data_send.send(None).await,
@@ -117,7 +106,7 @@ async fn usb_task(driver: Driver<'static, USB>) {
     // Create embassy-usb Config
     let mut config = Config::new(0x5e1f,  0x1e55);
     config.manufacturer = Some("UNL Aerospace");
-    config.product = Some("Battle of the Rockets 2024 Receiver");
+    config.product = Some("LoRa Receiver");
     config.serial_number = Some("00000001");
     config.max_power = 500;
     config.max_packet_size_0 = 64;
@@ -195,8 +184,7 @@ impl Handler for ControlHandler<'_> {
             return None;
         }
 
-        // Accept request 100, value 200, reject others.
-        if req.request != 1 && req.value != 0 {
+        if req.request != 100 && req.value != 1 {
             return None;
         }
 
@@ -219,7 +207,7 @@ impl Handler for ControlHandler<'_> {
             return None
         }
 
-        if req.request != 1 && req.value != 0 && req.length != 0x20 {
+        if req.request != 200 && req.value != 1 && req.length != 0x20 {
             return None
         }
 
@@ -230,12 +218,13 @@ impl Handler for ControlHandler<'_> {
         };
 
         if result.is_none() {
-            return Some(InResponse::Rejected)
+            buf[..0x20].copy_from_slice(&[0xFA; 0x20]);
+            return Some(InResponse::Accepted(&buf[..0x20]))
         }
 
         let res_slice = result.unwrap().to_bytes();
 
-        buf[..32].copy_from_slice(&res_slice[0..32]);
-        Some(InResponse::Accepted(&buf[..32]))
+        buf[..0x20].copy_from_slice(&res_slice[0..0x20]);
+        Some(InResponse::Accepted(&buf[..0x20]))
     }
 }
