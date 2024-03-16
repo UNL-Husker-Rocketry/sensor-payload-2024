@@ -1,6 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 
 // Main board control stuff
 use core::cell::RefCell;
@@ -59,10 +58,7 @@ async fn logger_task(driver: Driver<'static, USB>) {
 async fn blink_led(mut led: Output<'static, AnyPin>) {
     dev_init("Debug blinker");
     loop {
-        led.set_high();
-        Timer::after_secs(1).await;
-
-        led.set_low();
+        led.toggle();
         Timer::after_secs(1).await;
     }
 }
@@ -110,7 +106,7 @@ async fn main(spawner: Spawner) {
 
     // Set up the LoRa transmitter
     let transmit_sender = TRANSMIT_CHANNEL.sender();
-    spawner.spawn(transmitter(TRANSMIT_CHANNEL.receiver(), spi, cs, reset, 14)).unwrap();
+    spawner.spawn(transmitter(TRANSMIT_CHANNEL.receiver(), spi, cs, reset, 20)).unwrap();
 
     // Set up I2C stuff
     let sda = p.PIN_2;
@@ -126,7 +122,6 @@ async fn main(spawner: Spawner) {
         mma8x5x::SlaveAddr::Alternative(true)
     );
     let _ = accel.disable_auto_sleep();
-    let _ = accel.set_read_mode(mma8x5x::ReadMode::Fast);
     let _ = accel.set_scale(mma8x5x::GScale::G8);
     let mut accel = match accel.into_active() {
         Ok(device) => {
@@ -152,16 +147,13 @@ async fn main(spawner: Spawner) {
             None
         },
     };
-    match bmp {
-        Some(ref mut dev) => {
-            let _ = dev.set_power_control(bmp388::PowerControl {
-                pressure_enable: true,
-                temperature_enable: true,
-                mode: bmp388::PowerMode::Normal
-            }).await;
-            dev_init("Temp/Pressure (BMP388)");
-        },
-        None => (),
+    if let Some(ref mut dev) = bmp {
+        let _ = dev.set_power_control(bmp388::PowerControl {
+            pressure_enable: true,
+            temperature_enable: true,
+            mode: bmp388::PowerMode::Normal
+        }).await;
+        dev_init("Temp/Pressure (BMP388)");
     }
 
     // Start the real time clock with a zeroed-out datetime
@@ -261,7 +253,7 @@ async fn main(spawner: Spawner) {
         }
 
         // Build the packet
-        let conditions = Packet {
+        let mut conditions = Packet {
             time: Time {
                 hours: realtime_now.hour,
                 minutes: realtime_now.minute,
@@ -271,12 +263,15 @@ async fn main(spawner: Spawner) {
             lat,
             lon,
             alt,
-            temp: (pres_temp_val.temperature + 273.15) as u16,
+            temp: (pres_temp_val.temperature * 10.0) as i16,
             pres: (pres_temp_val.pressure / 10.0) as u16,
             accel_x: (accel_val.x * 10.0) as i16,
             accel_y: (accel_val.y * 10.0) as i16,
             accel_z: (accel_val.z * 10.0) as i16,
+            crc: 0,
         };
+
+        conditions.set_crc();
 
         match transmit_sender.try_send(conditions) {
             Ok(_) => (),
@@ -299,7 +294,7 @@ async fn gps_reader(
     loop {
         let mut buf = [0; 128];
         // Wait for new data from the GPS module
-        let _ = match with_timeout(Duration::from_secs(5), rx.read(&mut buf)).await {
+        match with_timeout(Duration::from_secs(5), rx.read(&mut buf)).await {
             Ok(_) => (),
             Err(_) => error("GPS timed out"),
         };
@@ -333,9 +328,8 @@ async fn transmitter(
     };
     dev_init("LoRa (Sx127x)");
 
-    let _ = lora.set_tx_power(power, 0);
+    let _ = lora.set_tx_power(power, 1);
     let _ = lora.set_ocp(240);
-    let _ = lora.set_crc(true);
 
     begin("Transmission Loop");
     loop {

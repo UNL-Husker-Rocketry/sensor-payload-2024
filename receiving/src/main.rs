@@ -23,18 +23,6 @@ bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
 });
 
-/// Set up a task to blink the LED
-#[embassy_executor::task]
-async fn blink_led(mut led: Output<'static, AnyPin>) {
-    loop {
-        led.set_high();
-        Timer::after_secs(1).await;
-
-        led.set_low();
-        Timer::after_secs(1).await;
-    }
-}
-
 struct Req;
 /// A channel to request data from the receiver
 static REQUEST_CHANNEL: Channel<ThreadModeRawMutex, Req, 1> = Channel::new();
@@ -47,8 +35,7 @@ async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
     // Set up USB serial logging and the LED blink
-    let led = Output::new(AnyPin::from(p.PIN_13), Level::High);
-    spawner.spawn(blink_led(led)).unwrap();
+    let mut led = Output::new(AnyPin::from(p.PIN_13), Level::High);
     let driver = Driver::new(p.USB, Irqs);
     spawner.spawn(usb_task(driver)).unwrap();
 
@@ -78,7 +65,6 @@ async fn main(spawner: Spawner) {
     // Actually initialize the LoRa module
     let mut lora =
         sx127x_lora::LoRa::new(spi, cs, reset, 915, Delay).expect("Could not initalize module!");
-    let _ = lora.set_crc(true);
 
     let data_request = REQUEST_CHANNEL.receiver();
     let data_send = RECEIVE_CHANNEL.sender();
@@ -86,6 +72,7 @@ async fn main(spawner: Spawner) {
     loop {
         // Wait for a request to receive a new packet
         data_request.receive().await;
+        led.toggle();
 
         // Actually receive the new packet
         let poll = lora.poll_irq(Some(20));
@@ -93,10 +80,18 @@ async fn main(spawner: Spawner) {
         match poll {
             Ok(_) => {
                 let buffer = lora.read_packet().unwrap();
-                let packet = Packet::from_buffer(&buffer).unwrap();
-                let _ = data_send.send(Some(packet));
+                let packet = match Packet::from_buffer(&buffer) {
+                    Ok(packet) => packet,
+                    Err(_) => {
+                        let _ = data_send.try_send(None);
+                        continue;
+                    },
+                };
+                let _ = data_send.try_send(Some(packet));
             },
-            Err(_) => data_send.send(None).await,
+            Err(_) => {
+                let _ = data_send.try_send(None);
+            },
         }
     }
 }
@@ -218,14 +213,16 @@ impl Handler for ControlHandler<'_> {
         };
 
         if result.is_none() {
-            buf[..0x4].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
-            buf[0x4..0x20].copy_from_slice(&[0x00; 0x1C]);
             return Some(InResponse::Rejected)
         }
 
-        let res_slice = result.unwrap().to_bytes();
-
+        let res_slice = result.unwrap().as_bytes();
         buf[..0x20].copy_from_slice(&res_slice[0..0x20]);
+
+        if !result.unwrap().check_crc() {
+            return Some(InResponse::Rejected)
+        }
+
         Some(InResponse::Accepted(&buf[..0x20]))
     }
 }

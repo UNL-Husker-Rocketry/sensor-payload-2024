@@ -11,3 +11,4 @@ defmt = "0.3.6"
 nmea0183 = "0.4.0"
 packed_struct = { version = "0.10.1", default-features = false }
 bincode = { version = "2.0.0-rc.3", default-features = false, features = ["derive"] }
+crc = "3.0.1"
