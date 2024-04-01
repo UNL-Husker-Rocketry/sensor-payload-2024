@@ -16,7 +16,7 @@ use embassy_rp::{
     bind_interrupts,
     gpio::{AnyPin, Level, Output},
     i2c,
-    peripherals::{I2C1, SPI1, UART1, USB},
+    peripherals::{I2C1, SPI1, UART0, UART1, USB},
     rtc::{DateTime, Rtc},
     spi::{Blocking, Spi},
     uart,
@@ -78,12 +78,15 @@ async fn main(spawner: Spawner) {
     let led = Output::new(AnyPin::from(p.PIN_13), Level::Low);
     spawner.spawn(blink_led(led)).unwrap();
 
-    Timer::after_millis(2000).await;
-    info!("\x1b[0;35mSensor Payload Firmware v0.2.0 start!\x1b[0m");
+    //Timer::after_millis(2000).await; // Add this delay back in if you want serial status
+    info!("\x1b[0;35mSensor Payload Firmware v0.2.1 start!\x1b[0m");
 
     // Set up the UART (GPS)
     let mut uart_config = uart::Config::default();
     uart_config.baudrate = 9600;
+    let mut uart_tx: uart::UartTx<'_, UART0, uart::Async> = uart::UartTx::new(p.UART0, p.PIN_0, p.DMA_CH0, uart_config);
+    info!("{:?}", uart_tx.write(b"$PMTK220, 200*2C\r\n").await);
+
     let uart_rx = uart::UartRx::new(p.UART1, p.PIN_5, Irqs, p.DMA_CH1, uart_config);
     let gps_receiver = GPS_CHANNEL.receiver();
     spawner.spawn(gps_reader(uart_rx, GPS_CHANNEL.sender())).unwrap();
@@ -230,7 +233,6 @@ async fn main(spawner: Spawner) {
                 Ok(_) => (),
                 Err(_) => error("Failed to set datetime"),
             };
-            timer = Instant::now();
             realtime_now = rtc.now().unwrap();
 
             // Set all the position data
@@ -247,7 +249,8 @@ async fn main(spawner: Spawner) {
                 gga.longitude.seconds,
                 gga.longitude.hemisphere
             ) * 1_000_000.0) as i32;
-        } else if second != realtime_now.second { // The second must have advanced, update the subsecond timer
+        }
+        if second != realtime_now.second { // The second must have advanced, update the subsecond timer
             timer = Instant::now();
             second = realtime_now.second
         }
@@ -279,7 +282,7 @@ async fn main(spawner: Spawner) {
         };
 
         watchdog.feed();
-        Timer::after_millis(100).await;
+        Timer::after_millis(200).await;
     }
 }
 
