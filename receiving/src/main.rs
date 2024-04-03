@@ -10,7 +10,7 @@ use embassy_rp::{
     usb::{Driver, InterruptHandler},
 };
 use embassy_sync::{channel::{Channel, Receiver, Sender}, blocking_mutex::raw::ThreadModeRawMutex};
-use embassy_time::{Delay, Timer};
+use embassy_time::Delay;
 use embassy_usb::{msos::{windows_version, self}, Builder, types::InterfaceNumber, Config, control::{OutResponse, RequestType, Recipient, Request, InResponse}, Handler};
 use gpio::{Level, Output};
 use shared_types::Packet;
@@ -38,11 +38,6 @@ async fn main(spawner: Spawner) {
     let mut led = Output::new(AnyPin::from(p.PIN_13), Level::High);
     let driver = Driver::new(p.USB, Irqs);
     spawner.spawn(usb_task(driver)).unwrap();
-
-    // Wait for a bit for everything to start up, this
-    // along with the serial logging should be removed
-    // before being used for real
-    Timer::after_secs(2).await;
 
     // Set up all the pins needed for the LoRa module
     // Documentation here: https://learn.adafruit.com/feather-rp2040-rfm95/pinouts
@@ -202,7 +197,7 @@ impl Handler for ControlHandler<'_> {
             return None
         }
 
-        if req.request != 200 && req.value != 1 && req.length != 0x20 {
+        if req.request != 200 && req.value != 1 && req.length != 0x18 {
             return None
         }
 
@@ -217,12 +212,12 @@ impl Handler for ControlHandler<'_> {
         }
 
         let res_slice = result.unwrap().as_bytes();
-        buf[..0x20].copy_from_slice(&res_slice[0..0x20]);
+        buf[..0x18].copy_from_slice(&res_slice[0..0x18]);
 
-        if !result.unwrap().check_crc() {
+        if !result.unwrap().validate() {
             return Some(InResponse::Rejected)
         }
 
-        Some(InResponse::Accepted(&buf[..0x20]))
+        Some(InResponse::Accepted(&buf[..0x18]))
     }
 }

@@ -23,7 +23,7 @@ use embassy_rp::{
     usb::{self, Driver},
     watchdog::*
 };
-use embassy_time::{with_timeout, Delay, Duration, Instant, Timer};
+use embassy_time::{with_timeout, Delay, Duration, Timer};
 
 // Packet and time structs
 use shared_types::{Packet, Time};
@@ -34,8 +34,7 @@ use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
 // Sensor data processing
-use mma8x5x::Mma8x5x;
-use bmp388::BMP388;
+use bmp388::{Oversampling, BMP388};
 use nmea0183::{
     coords::Hemisphere,
     ParseResult, Parser, GGA
@@ -84,12 +83,10 @@ async fn main(spawner: Spawner) {
     // Set up the UART (GPS)
     let mut uart_config = uart::Config::default();
     uart_config.baudrate = 9600;
-    let mut uart_tx: uart::UartTx<'_, UART0, uart::Async> = uart::UartTx::new(p.UART0, p.PIN_0, p.DMA_CH0, uart_config);
-    info!("{:?}", uart_tx.write(b"$PMTK220, 200*2C\r\n").await);
-
+    let uart_tx = uart::UartTx::new(p.UART0, p.PIN_0, p.DMA_CH0, uart_config);
     let uart_rx = uart::UartRx::new(p.UART1, p.PIN_5, Irqs, p.DMA_CH1, uart_config);
     let gps_receiver = GPS_CHANNEL.receiver();
-    spawner.spawn(gps_reader(uart_rx, GPS_CHANNEL.sender())).unwrap();
+    spawner.spawn(gps_reader(uart_rx, uart_tx, GPS_CHANNEL.sender())).unwrap();
 
     // Set up all the pins needed for the LoRa module SPI
     // Documentation here: https://learn.adafruit.com/feather-rp2040-rfm95/pinouts
@@ -114,28 +111,9 @@ async fn main(spawner: Spawner) {
     // Set up I2C stuff
     let sda = p.PIN_2;
     let scl = p.PIN_3;
-    let i2c_config = i2c::Config::default();
-    let i2c_main = i2c::I2c::new_blocking(p.I2C1, scl, sda, i2c_config);
+    let i2c_main = i2c::I2c::new_blocking(p.I2C1, scl, sda, i2c::Config::default());
     let i2c_bus = NoopMutex::new(RefCell::new(i2c_main));
     let i2c_bus = I2C_BUS.init(i2c_bus);
-
-    // Accelerometer
-    let mut accel = Mma8x5x::new_mma8451(
-        I2cDevice::new(i2c_bus),
-        mma8x5x::SlaveAddr::Alternative(true)
-    );
-    let _ = accel.disable_auto_sleep();
-    let _ = accel.set_scale(mma8x5x::GScale::G8);
-    let mut accel = match accel.into_active() {
-        Ok(device) => {
-            dev_init("Accelerometer (MMA8451)");
-            Some(device)
-        },
-        Err(_) => {
-            error("Accelerometer (MMA8451) is disabled");
-            None
-        },
-    };
 
     // Temperature/Pressure
     let mut bmp = match BMP388::new(
@@ -156,6 +134,15 @@ async fn main(spawner: Spawner) {
             temperature_enable: true,
             mode: bmp388::PowerMode::Normal
         }).await;
+        let _ = dev.set_sampling_rate(bmp388::SamplingRate::ms160).await;
+        let _ = dev.set_oversampling(bmp388::config::OversamplingConfig {
+            osr_pressure: Oversampling::x32,
+            osr_temperature: Oversampling::x2
+        }).await;
+        let _ = dev.set_filter(bmp388::Filter::c3);
+        for _ in 0..10 {
+            let _ = dev.sensor_values().await;
+        }
         dev_init("Temp/Pressure (BMP388)");
     }
 
@@ -182,24 +169,12 @@ async fn main(spawner: Spawner) {
     let mut alt = 0;
 
     // A timer for keeping track of sub-second time
-    let mut timer = Instant::now();
+    let mut counter = 0;
     let mut second = 0;
 
     begin("Main Loop");
     watchdog.start(Duration::from_millis(1_000));
     loop {
-        // Get the new acceleration data
-        let accel_val = match accel {
-            Some(ref mut accel) => match accel.read() {
-                Ok(val) => val,
-                Err(_) => {
-                    error("Failed to read MMA8451!");
-                    mma8x5x::Measurement::default()
-                },
-            },
-            None => mma8x5x::Measurement::default(),
-        };
-
         // Get the new temperature data
         let pres_temp_val = match bmp {
             Some(ref mut dev) => match dev.sensor_values().await {
@@ -250,8 +225,11 @@ async fn main(spawner: Spawner) {
                 gga.longitude.hemisphere
             ) * 1_000_000.0) as i32;
         }
-        if second != realtime_now.second { // The second must have advanced, update the subsecond timer
-            timer = Instant::now();
+
+        // The second must have advanced, update the subsecond timer
+        counter += 1;
+        if second != realtime_now.second {
+            counter = 0;
             second = realtime_now.second
         }
 
@@ -261,21 +239,17 @@ async fn main(spawner: Spawner) {
                 hours: realtime_now.hour,
                 minutes: realtime_now.minute,
                 seconds: realtime_now.second,
-                microseconds: (timer.elapsed().as_micros() % 1_000_000) as u32,
+                counter,
             },
             lat,
             lon,
             alt,
             temp: (pres_temp_val.temperature * 10.0) as i16,
-            pres: (pres_temp_val.pressure / 10.0) as u16,
-            accel_x: (accel_val.x * 10.0) as i16,
-            accel_y: (accel_val.y * 10.0) as i16,
-            accel_z: (accel_val.z * 10.0) as i16,
+            pres: (pres_temp_val.pressure * 100.0) as u32,
             crc: 0,
         };
 
         conditions.set_crc();
-
         match transmit_sender.try_send(conditions) {
             Ok(_) => (),
             Err(_) => error("Transmission failed."),
@@ -288,14 +262,18 @@ async fn main(spawner: Spawner) {
 
 #[embassy_executor::task]
 async fn gps_reader(
-    mut rx: uart::UartRx<'static,UART1, uart::Async> ,
+    mut rx: uart::UartRx<'static, UART1, uart::Async>,
+    mut tx: uart::UartTx<'static, UART0, uart::Async>,
     channel_sender: Sender<'static, ThreadModeRawMutex, GGA, 1>,
 ) {
+    let mut buf = [0; 128];
+    let _ = tx.write(b"$PMTK220,200*2C\r\n").await;
+    let _ = tx.write(b"$PMTK314,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0*29\r\n").await;
+
     dev_init("GPS (MTK3339)");
-    let mut parser = Parser::new();
+    let mut parser = Parser::new().sentence_only(nmea0183::Sentence::GGA);
     begin("GPS Loop");
     loop {
-        let mut buf = [0; 128];
         // Wait for new data from the GPS module
         match with_timeout(Duration::from_secs(5), rx.read(&mut buf)).await {
             Ok(_) => (),
@@ -331,7 +309,7 @@ async fn transmitter(
     };
     dev_init("LoRa (Sx127x)");
 
-    let _ = lora.set_tx_power(power, 1);
+    let _ = lora.set_tx_power(power, 0);
     let _ = lora.set_ocp(240);
 
     begin("Transmission Loop");
@@ -361,6 +339,7 @@ async fn transmitter(
     }
 }
 
+/// Convert hr/min/sec to decimal format
 fn to_decimal(hours: u8, minutes: u8, seconds: f32, hemisphere: Hemisphere) -> f64 {
     let mut deg = hours as f64 + (minutes as f64 / 60.0) + (seconds as f64 / 3600.0);
     if hemisphere == Hemisphere::South
@@ -370,6 +349,11 @@ fn to_decimal(hours: u8, minutes: u8, seconds: f32, hemisphere: Hemisphere) -> f
     }
 
     deg
+}
+
+#[inline]
+fn info(info: &str) {
+    info!("INFO: {}", info);
 }
 
 #[inline]

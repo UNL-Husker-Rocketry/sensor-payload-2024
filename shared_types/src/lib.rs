@@ -3,16 +3,19 @@
 use core::fmt::Display;
 use packed_struct::prelude::*;
 use bincode::{Encode, Decode, error::DecodeError};
-use crc::{Crc, CRC_5_USB};
+use crc::{Crc, CRC_8_BLUETOOTH};
 
-pub const CRC_CALC: Crc<u8> = Crc::<u8>::new(&CRC_5_USB);
+pub const CRC_CALC: Crc<u8> = Crc::<u8>::new(&CRC_8_BLUETOOTH);
 
 /// A standard packet for transmission of basic telemetry
 #[derive(Default, Clone, Copy, Debug, Encode, Decode, PackedStruct)]
 #[packed_struct(bit_numbering="msb0")]
 pub struct Packet {
-    /// Time in hr, min, sec, µs format
-    #[packed_field(bits="0..=37")]
+    /// Time in hr, min, sec, counter format
+    ///
+    /// The counter value indicates which packet within the second it is, from
+    /// 0 - 4 if the packet is sent 5 times per second.
+    #[packed_field(bits="0..=20")]
     pub time: Time,
 
     /// Latitude in degrees * 1,000,000
@@ -29,39 +32,21 @@ pub struct Packet {
 
     /// Altitude in meters
     ///
-    /// -262144m - 262144m
+    /// -262,144m - 262,144m
     #[packed_field(endian="lsb", size_bits="19")]
     pub alt: i32,
 
     /// Temperature in Celsius * 10
     ///
-    /// -204.8C - 204.8K
-    #[packed_field(endian="lsb", size_bits="12")]
+    /// -1638.4C - 1638.4C
+    #[packed_field(endian="lsb", size_bits="15")]
     pub temp: i16,
 
-    /// Pressure in millibars * 10
+    /// Pressure in millibars * 10,000
     ///
-    /// 0.0Mb - 6553.6Mb
-    #[packed_field(endian="lsb", size_bits="16")]
-    pub pres: u16,
-
-    /// Acceleration in G * 10 for X
-    ///
-    /// -102.4g - 102.4g
-    #[packed_field(endian="lsb", size_bits="11")]
-    pub accel_x: i16,
-
-    /// Acceleration in G * 10 for Y
-    ///
-    /// -102.4g - 102.4g
-    #[packed_field(endian="lsb", size_bits="11")]
-    pub accel_y: i16,
-
-    /// Acceleration in G * 10 for Z
-    ///
-    /// -102.4g - 102.4g
-    #[packed_field(endian="lsb", size_bits="11")]
-    pub accel_z: i16,
+    /// 0.0000Mb - 1677.7216Mb
+    #[packed_field(endian="lsb", size_bits="24")]
+    pub pres: u32,
 
     /// CRC of the packet to ensure integrity
     #[packed_field(size_bits="8")]
@@ -84,17 +69,17 @@ impl Packet {
     }
 
     /// Returns the [Packet] as an unpacked byte array
-    pub fn as_bytes(&self) -> [u8; 32] {
-        let mut array = [0u8; 32];
-        bincode::encode_into_slice(self, &mut array[0..32], bincode::config::legacy()).unwrap();
+    pub fn as_bytes(&self) -> [u8; 0x18] {
+        let mut array = [0u8; 0x18];
+        bincode::encode_into_slice(self, &mut array[0..0x18], bincode::config::legacy()).unwrap();
         array
     }
 
     /// Takes in a buffer and unpacks the bit-packing to return a
     /// new [Packet] with the original data.
     pub fn from_buffer(buffer: &[u8]) -> Result<Self, PackingError> {
-        let mut small_buf = [0; 23];
-        small_buf.copy_from_slice(&buffer[..23]);
+        let mut small_buf = [0; 0x12];
+        small_buf.copy_from_slice(&buffer[..0x12]);
 
         Self::unpack_from_slice(&small_buf)
     }
@@ -107,15 +92,15 @@ impl Packet {
 
     /// Sets the CRC field of the packet using its own data
     pub fn set_crc(&mut self) {
-        let bytes = &self.pack().unwrap()[0..22];
+        let bytes = &self.pack().unwrap()[0..0x11];
 
         self.crc = CRC_CALC.checksum(bytes);
     }
 
     /// Checks the CRC field of the packet against its current data,
     /// returning false if the data is different
-    pub fn check_crc(&self) -> bool {
-        let bytes = &self.pack().unwrap()[0..22];
+    pub fn validate(&self) -> bool {
+        let bytes = &self.pack().unwrap()[0..0x11];
 
         let new_crc = CRC_CALC.checksum(bytes);
 
@@ -140,12 +125,12 @@ pub struct Time {
     pub seconds: u8,
 
     /// The number of microseconds within a second
-    #[packed_field(endian="lsb", size_bits="20")]
-    pub microseconds: u32,
+    #[packed_field(size_bits="3")]
+    pub counter: u8,
 }
 
 impl Display for Time {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{:02}:{:02}:{:02}.{:06}", self.hours, self.minutes, self.seconds, self.microseconds)
+        write!(f, "{:02}:{:02}:{:02}.{:06}", self.hours, self.minutes, self.seconds, self.counter)
     }
 }
